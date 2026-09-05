@@ -1,5 +1,6 @@
 import { RuntimeEngine } from './engine.js';
 import type { RuntimeEngineOptions, RespondApprovalInput } from './engine.js';
+import type { VerificationRequest, VerificationResult } from './verifier.js';
 import type {
   AnyRuntimeEvent,
   Approval,
@@ -26,6 +27,11 @@ export interface AppServerContract {
   checkSandbox(threadId: string, input: SandboxCheckInput): SandboxDecision;
   readWorkspaceFile(threadId: string, targetPath: string): string;
   writeArtifact(threadId: string, artifactName: string, content: string): ArtifactWriteResult;
+  verifyArtifact(
+    threadId: string,
+    artifactName: string,
+    options?: Omit<VerificationRequest, 'artifactPath'>,
+  ): VerificationResult;
 }
 
 export class AppServer implements AppServerContract {
@@ -89,5 +95,13 @@ export class AppServer implements AppServerContract {
     content: string,
   ): ArtifactWriteResult {
     return this.runtime.writeArtifact(threadId, artifactName, content);
+  }
+
+  public verifyArtifact(
+    threadId: string,
+    artifactName: string,
+    options: Omit<VerificationRequest, 'artifactPath'> = {},
+  ): VerificationResult {
+    return this.runtime.verifyArtifact(threadId, artifactName, options);
   }
 }

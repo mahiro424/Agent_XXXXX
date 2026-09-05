@@ -72,6 +72,17 @@ export class LocalWorkspaceSandbox {
     return decision;
   }
 
+  public artifactPath(artifactName: string): string {
+    const targetPath = join(this.artifactsDirName, artifactName);
+    const decision = this.check({ operation: 'read', targetPath });
+    this.assertAllowed(decision);
+    const absolutePath = this.resolveInsideArtifacts(artifactName);
+    if (existsSync(absolutePath)) {
+      this.assertRealPathInsideRoot(absolutePath);
+    }
+    return absolutePath;
+  }
+
   public readFile(targetPath: string): string {
     const decision = this.check({ operation: 'read', targetPath });
     this.assertAllowed(decision);

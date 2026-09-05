@@ -112,6 +112,28 @@ describe('App Server Seam', () => {
     ]);
   });
 
+  it('verifies artifacts through the public contract and preserves uncertainty', () => {
+    const root = mkdtempSync(join(tmpdir(), 'agent-app-server-verifier-'));
+    workspaceRoots.push(root);
+    const server = new AppServer();
+    const thread = server.createThread({ workspaceId: 'demo-workspace', workspaceRoot: root });
+    server.writeArtifact(thread.id, 'report.txt', 'Weekly report\nDecision: ship Friday');
+
+    const verified = server.verifyArtifact(thread.id, 'report.txt', {
+      requiredText: ['Weekly report', 'ship Friday'],
+    });
+    expect(verified.status).toBe('VERIFIED');
+    expect(verified.sha256).toMatch(/^[a-f0-9]{64}$/);
+
+    const uncertain = server.verifyArtifact(thread.id, 'report.txt', {
+      reconciliationRequired: true,
+    });
+    expect(uncertain.status).toBe('RECONCILIATION_REQUIRED');
+    expect(uncertain.checks.find((check) => check.name === 'reconciliation_gate')?.status).toBe(
+      'uncertain',
+    );
+  });
+
   it('does not bypass the protocol when a thread has no workspace root', () => {
     const server = new AppServer();
     const thread = server.createThread({ workspaceId: 'memory-only' });

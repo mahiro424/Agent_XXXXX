@@ -11,6 +11,8 @@ import {
   transitionTurnStatus,
 } from './state-machine.js';
 import { LocalWorkspaceSandbox } from './sandbox.js';
+import { EvidenceVerifier } from './verifier.js';
+import type { VerificationRequest, VerificationResult } from './verifier.js';
 import type {
   AnyRuntimeEvent,
   Approval,
@@ -65,6 +67,7 @@ export class RuntimeEngine {
   private readonly model: FakeModel;
   private readonly toolAdapter: FakeToolAdapter;
   private readonly verifier: FakeVerifier;
+  private readonly evidenceVerifier: EvidenceVerifier;
   private readonly sandboxes = new Map<string, LocalWorkspaceSandbox>();
   private readonly now: RuntimeClock;
   private readonly createId: RuntimeIdFactory;
@@ -76,6 +79,10 @@ export class RuntimeEngine {
     this.model = new FakeModel(this.createId);
     this.toolAdapter = new FakeToolAdapter(options.scenario, this.createId);
     this.verifier = new FakeVerifier(options.scenario, this.createId);
+    this.evidenceVerifier = new EvidenceVerifier({
+      now: this.now,
+      idFactory: this.createId,
+    });
   }
 
   public createThread(input: CreateThreadInput): Thread {
@@ -277,6 +284,15 @@ export class RuntimeEngine {
     return this.requireSandbox(threadId).writeArtifact(artifactName, content);
   }
 
+  public verifyArtifact(
+    threadId: string,
+    artifactName: string,
+    options: Omit<VerificationRequest, 'artifactPath'> = {},
+  ): VerificationResult {
+    const artifactPath = this.requireSandbox(threadId).artifactPath(artifactName);
+    return this.evidenceVerifier.verify({ artifactPath, ...options });
+  }
+
   private executeApprovedTurn(thread: Thread, turn: Turn, plan: Plan): void {
     const step = plan.steps[0];
     if (!step) {
@@ -329,10 +345,10 @@ export class RuntimeEngine {
       payload: result,
     });
     const verifyingTurn = this.updateTurn(thread, turn, 'verifying');
-    this.verifyArtifact(thread, verifyingTurn);
+    this.verifyGeneratedArtifact(thread, verifyingTurn);
   }
 
-  private verifyArtifact(thread: Thread, turn: Turn): void {
+  private verifyGeneratedArtifact(thread: Thread, turn: Turn): void {
     const verificationId = this.createId('verification');
     const started: ArtifactVerification = {
       id: verificationId,
