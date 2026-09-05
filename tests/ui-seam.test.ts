@@ -134,11 +134,26 @@ describe('demo-home UI contract', () => {
     const shell = new AppShellController({ server });
     const home = new DemoHomeController({ server });
 
-    expect(renderAppShell(shell.view())).toContain('data-page="app-shell"');
-    expect(renderAppShell(shell.view())).toContain('aria-label="主导航"');
-    expect(renderDemoHome(home.view())).toContain('data-page="demo-home"');
-    expect(renderDemoHome(home.view())).toContain('data-action="submit-plan"');
-    expect(renderDemoHome(home.view())).toContain('尚未选择工作区');
+    const shellMarkup = renderAppShell(shell.view(), {
+      workspaceFiles: ['custom-data.csv'],
+      artifactFiles: ['verified-report.xlsx'],
+    });
+
+    expect(shellMarkup).toContain('data-page="app-shell"');
+    expect(shellMarkup).toContain('aria-label="主导航"');
+    expect(shellMarkup).toContain('custom-data.csv');
+    expect(shellMarkup).toContain('verified-report.xlsx');
+    // Ensure bottom-left user card is omitted as requested for V1 demo
+    expect(shellMarkup).not.toContain('管理员 (Admin)');
+
+    const homeMarkup = renderDemoHome(home.view());
+    expect(homeMarkup).toContain('data-page="demo-home"');
+    expect(homeMarkup).toContain('data-action="submit-plan"');
+    expect(homeMarkup).toContain('尚未选择工作区');
+    expect(homeMarkup).toContain('data-category="excel"');
+    expect(homeMarkup).toContain('data-category="word"');
+    expect(homeMarkup).toContain('Office-自动合并多表与公式汇总');
+    expect(homeMarkup).toContain('沙箱写保护: 仅限 artifacts/ 目录');
   });
 
   it('renders plan approval controls and escaped event timeline entries', () => {

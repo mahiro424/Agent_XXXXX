@@ -15,7 +15,15 @@ function escapeHtml(value: string): string {
     .replaceAll("'", '&#39;');
 }
 
-export function renderAppShell(view: AppShellView): string {
+export interface AppShellRenderContext {
+  readonly workspaceFiles?: readonly string[];
+  readonly artifactFiles?: readonly string[];
+}
+
+export function renderAppShell(
+  view: AppShellView,
+  context?: AppShellRenderContext,
+): string {
   const nav = view.navItems
     .map(
       (item) =>
@@ -34,14 +42,89 @@ export function renderAppShell(view: AppShellView): string {
     ? '<button type="button" data-action="stop-task">停止任务</button>'
     : '';
 
+  const workspaceName = view.workspaceRoot
+    ? view.workspaceRoot.split(/[\\/]/).pop() ?? 'workspace'
+    : 'demo-workspace';
+
+  const defaultWorkspaceFiles = [
+    'sales.csv (数据源)',
+    'meeting-notes.md (会议要点)',
+    'decisions.txt (决议)',
+  ];
+  const workspaceFilesList = (context?.workspaceFiles && context.workspaceFiles.length > 0
+    ? context.workspaceFiles
+    : defaultWorkspaceFiles)
+    .map((file) => `<div class="tree-file"><span>📄 ${escapeHtml(file)}</span></div>`)
+    .join('');
+
+  const defaultArtifactFiles = [
+    'sales-summary.xlsx (5分)',
+    'weekly-meeting-report.docx (4分)',
+  ];
+  const artifactFilesList = (context?.artifactFiles && context.artifactFiles.length > 0
+    ? context.artifactFiles
+    : defaultArtifactFiles)
+    .map(
+      (file) =>
+        `<div class="tree-file verified"><span>📊 ${escapeHtml(file)}</span><span class="badge-tag">已验</span></div>`,
+    )
+    .join('');
+
   return `<main data-page="app-shell" data-state="${view.readiness}" class="surface-base">
-  <nav aria-label="主导航" class="surface-card">${nav}</nav>
+  <nav aria-label="主导航" class="surface-card">
+    <div class="sidebar-header">
+      <div class="sidebar-brand">
+        <span class="brand-avatar">A</span>
+        <span class="brand-name">Agent_XXXXX</span>
+        <span class="brand-version">v1.0</span>
+      </div>
+    </div>
+    <div class="nav-links">${nav}</div>
+    <div class="sidebar-collapsible">
+      <div class="collapsible-title">
+        <span>定时任务</span>
+        <span class="arrow-icon">▾</span>
+      </div>
+      <div class="collapsible-list">
+        <div class="task-item"><span>⏱️ 每周销售数据汇总</span><span class="chevron">&gt;</span></div>
+        <div class="task-item"><span>⏱️ 周五会议纪要自动归档</span><span class="chevron">&gt;</span></div>
+      </div>
+    </div>
+    <div class="sidebar-collapsible workspace-tree-section">
+      <div class="collapsible-title">
+        <span>本地工作空间 (Local Workspace)</span>
+        <span class="arrow-icon">▾</span>
+      </div>
+      <div class="workspace-group">
+        <div class="folder-title">📁 ${escapeHtml(workspaceName)} (输入源)</div>
+        <div class="folder-children">${workspaceFilesList}</div>
+      </div>
+      <div class="workspace-group artifacts-group">
+        <div class="folder-title artifacts-title">📁 artifacts (任务产物目录)</div>
+        <div class="folder-children">${artifactFilesList}</div>
+      </div>
+    </div>
+  </nav>
   <header aria-label="全局状态">
-    ${workspace}
-    <span data-status="model">${escapeHtml(view.modelMode)} ${view.modelConnected ? '已连接' : '未连接'}</span>
-    <span data-status="sandbox">${view.sandboxReady ? '沙箱就绪' : '沙箱未就绪'}</span>
-    <span data-status="network">网络${view.network === 'disabled' ? '关闭' : '已开启'}</span>
-    ${stop}
+    <div class="header-left">
+      <span class="header-tool-icon">☰</span>
+      <span class="header-tool-icon">⚲</span>
+      <span class="header-tool-icon">🔍</span>
+    </div>
+    <div class="header-center-title">Agent_XXXXX</div>
+    <div class="header-right">
+      ${workspace}
+      <span data-status="sandbox" class="status-pill green">● ${
+        view.sandboxReady ? '沙箱就绪' : '沙箱保护中'
+      }</span>
+      <span data-status="model" class="status-pill">${escapeHtml(view.modelMode)} ${
+        view.modelConnected ? '已连接' : '未连接'
+      }</span>
+      <span data-status="network" class="status-pill">网络${
+        view.network === 'disabled' ? '关闭' : '已开启'
+      }</span>
+      ${stop}
+    </div>
   </header>
   <section data-route-content aria-live="polite">${escapeHtml(view.route)}</section>
   ${disabled}
@@ -52,7 +135,7 @@ export function renderDemoHome(view: DemoHomeView): string {
   const quickTasks = view.quickTasks
     .map(
       (task) =>
-        `<button type="button" data-quick-task="${escapeHtml(task)}">${escapeHtml(task)}</button>`,
+        `<button type="button" class="quick-task-btn" data-quick-task="${escapeHtml(task)}">${escapeHtml(task)} ↘</button>`,
     )
     .join('');
   const disabled = view.disabledReason
@@ -64,22 +147,81 @@ export function renderDemoHome(view: DemoHomeView): string {
 
   return `<main data-page="demo-home" data-state="${view.state}" class="surface-base">
   <section class="welcome" aria-labelledby="demo-home-title">
-    <h1 id="demo-home-title">告诉 Agent 你想完成什么</h1>
-    <p>从本地工作区开始，先生成方案，再由你决定是否执行。</p>
+    <div class="hero-box">
+      <h1 id="demo-home-title">Agent_XXXXX</h1>
+      <h2 class="hero-subtitle">本地工作区智能办公工作台</h2>
+    </div>
+
+    <div class="capability-pills" role="tablist">
+      <button type="button" class="cap-pill active" data-category="excel"><span>📊</span><span>Excel 智能汇总</span></button>
+      <button type="button" class="cap-pill" data-category="word"><span>📝</span><span>Word 周报生成</span></button>
+      <button type="button" class="cap-pill" data-category="clean"><span>📁</span><span>多源资料清洗</span></button>
+      <button type="button" class="cap-pill" data-category="verify"><span>🛡️</span><span>产物物理核验</span></button>
+      <button type="button" class="cap-pill" data-category="custom"><span>🪄</span><span>自定义 Skill</span></button>
+    </div>
+
     <div class="quick-tasks" aria-label="快捷任务">${quickTasks}</div>
-    <label for="task-input">任务</label>
-    <textarea id="task-input" name="task" aria-label="任务输入">${escapeHtml(view.taskInput)}</textarea>
-    <div class="workspace-status">${workspace}<button type="button" data-action="select-workspace">选择工作区</button></div>
-    <label for="model-mode">模型模式</label>
-    <select id="model-mode" data-action="set-model-mode" aria-label="模型模式">
-      <option value="fake" ${view.modelMode === 'fake' ? 'selected' : ''}>Fake Model Demo</option>
-      <option value="live" ${view.modelMode === 'live' ? 'selected' : ''}>Live Model Demo</option>
-    </select>
-    <div class="model-status" data-status="model">模型：${escapeHtml(view.modelMode)}</div>
-    <button type="button" data-action="submit-plan" ${view.canSubmit ? '' : 'disabled'}>${escapeHtml(
-      view.submitLabel,
-    )}</button>
+
+    <div class="main-prompt-card">
+      <div class="prompt-active-badge">
+        <span class="skill-badge-pill">
+          <span>🔗 Office-自动合并多表与公式汇总</span>
+          <button type="button" class="badge-remove-btn" title="清除标签">×</button>
+        </span>
+      </div>
+
+      <label for="task-input" class="sr-only">任务</label>
+      <textarea id="task-input" name="task" aria-label="任务输入" placeholder="输入任务需求，例如：读取工作区 sales.csv 与 meeting-notes.md，生成销售报表并汇总合计...">${escapeHtml(view.taskInput)}</textarea>
+
+      <div class="prompt-card-bottom">
+        <div class="controls-left">
+          <button type="button" class="add-btn" title="添加工作区附件">+</button>
+          <div class="workspace-status">
+            ${workspace}
+            <button type="button" data-action="select-workspace" class="select-workspace-btn">选择工作区</button>
+          </div>
+          <span class="sandbox-shield-tag">🔒 沙箱写保护: 仅限 artifacts/ 目录</span>
+        </div>
+
+        <div class="controls-right">
+          <label for="model-mode" class="sr-only">模型模式</label>
+          <select id="model-mode" data-action="set-model-mode" aria-label="模型模式" class="model-select">
+            <option value="fake" ${view.modelMode === 'fake' ? 'selected' : ''}>Fake Model Demo</option>
+            <option value="live" ${view.modelMode === 'live' ? 'selected' : ''}>Live Model Demo</option>
+          </select>
+          <div class="model-status" data-status="model" style="display:none">模型：${escapeHtml(view.modelMode)}</div>
+          <button type="button" class="submit-circle-btn" data-action="submit-plan" ${view.canSubmit ? '' : 'disabled'} title="${escapeHtml(view.submitLabel)}">
+            ↑
+          </button>
+        </div>
+      </div>
+    </div>
+
     ${disabled}
+
+    <div class="features-summary-grid">
+      <div class="summary-card">
+        <span class="card-icon">📑</span>
+        <div>
+          <div class="card-heading">OpenXML 真文档引擎</div>
+          <div class="card-desc">支持 docx 大纲分节与 exceljs 动态求和公式</div>
+        </div>
+      </div>
+      <div class="summary-card">
+        <span class="card-icon">🛡️</span>
+        <div>
+          <div class="card-heading">双重沙箱安全门禁</div>
+          <div class="card-desc">默认网络断开，禁止越界写，产物需用户确认</div>
+        </div>
+      </div>
+      <div class="summary-card">
+        <span class="card-icon">🔍</span>
+        <div>
+          <div class="card-heading">物理证据链校验</div>
+          <div class="card-desc">重开重读、SHA256、ZIP 结构非空验证</div>
+        </div>
+      </div>
+    </div>
   </section>
 </main>`;
 }
@@ -96,34 +238,41 @@ export function renderTaskPlan(view: TaskPlanRenderInput): string {
     view.plan?.steps
       .map(
         (step, index) =>
-          `<li data-plan-step="${escapeHtml(step.id)}"><strong>${index + 1}. ${escapeHtml(
-            step.title,
-          )}</strong><span data-tool="${escapeHtml(step.toolName)}">${escapeHtml(
-            step.toolName,
-          )}</span><span data-risk="${escapeHtml(step.risk)}">风险：${escapeHtml(
-            step.risk,
-          )}</span></li>`,
+          `<li data-plan-step="${escapeHtml(step.id)}" class="plan-step-card">
+            <div class="step-header">
+              <strong>${index + 1}. ${escapeHtml(step.title)}</strong>
+              <span class="risk-badge ${escapeHtml(step.risk)}" data-risk="${escapeHtml(step.risk)}">风险：${escapeHtml(step.risk)}</span>
+            </div>
+            <div class="step-tool" data-tool="${escapeHtml(step.toolName)}">工具：<code>${escapeHtml(step.toolName)}</code></div>
+          </li>`,
       )
       .join('') ?? '<li data-status="empty-plan">暂无计划</li>';
   const approval = view.approval;
   const approvalMarkup =
     approval === undefined
-      ? '<p data-status="approval">暂无审批</p>'
-      : `<section data-approval-status="${escapeHtml(approval.status)}" aria-labelledby="approval-title">
-  <h3 id="approval-title">审批</h3>
-  <p data-approval-reason>${escapeHtml(approval.reason)}</p>
+      ? '<p data-status="approval" class="approval-info">暂无审批需求</p>'
+      : `<section data-approval-status="${escapeHtml(approval.status)}" aria-labelledby="approval-title" class="approval-panel">
+  <h3 id="approval-title">方案审批确认</h3>
+  <p data-approval-reason class="approval-reason">${escapeHtml(approval.reason)}</p>
   ${
     approval.status === 'pending'
-      ? '<button type="button" data-action="approve-plan">批准执行</button><button type="button" data-action="reject-plan">拒绝执行</button>'
-      : `<p role="status">审批状态：${escapeHtml(approval.status)}</p>`
+      ? `<div class="approval-actions">
+           <button type="button" class="btn-approve" data-action="approve-plan">批准执行</button>
+           <button type="button" class="btn-reject" data-action="reject-plan">拒绝执行</button>
+         </div>`
+      : `<p role="status" class="approval-resolved">审批状态：<strong>${escapeHtml(approval.status)}</strong></p>`
   }
 </section>`;
 
-  return `<section data-page="task-plan" aria-labelledby="task-plan-title">
-  <h2 id="task-plan-title">任务计划</h2>
-  <p data-status="thread">Thread：${escapeHtml(view.threadStatus ?? 'unknown')}</p>
-  <p data-status="turn">Turn：${escapeHtml(view.turnStatus ?? 'unknown')}</p>
-  <ol data-plan-steps>${steps}</ol>
+  return `<section data-page="task-plan" aria-labelledby="task-plan-title" class="task-plan-container">
+  <div class="plan-header-box">
+    <h2 id="task-plan-title">任务计划与审批</h2>
+    <div class="status-tags">
+      <span data-status="thread" class="thread-tag">Thread: ${escapeHtml(view.threadStatus ?? 'unknown')}</span>
+      <span data-status="turn" class="turn-tag">Turn: ${escapeHtml(view.turnStatus ?? 'unknown')}</span>
+    </div>
+  </div>
+  <ol data-plan-steps class="steps-list">${steps}</ol>
   ${approvalMarkup}
 </section>`;
 }
@@ -132,15 +281,17 @@ export function renderEventTimeline(events: readonly DesktopEventDto[]): string 
   const items = events
     .map((event) => {
       const payload = JSON.stringify(event.payload) ?? '';
-      return `<li data-event-type="${escapeHtml(event.type)}"><time datetime="${escapeHtml(
-        event.occurredAt,
-      )}">#${event.sequence}</time><strong>${escapeHtml(event.type)}</strong><span>${escapeHtml(
-        payload,
-      )}</span></li>`;
+      return `<li data-event-type="${escapeHtml(event.type)}" class="timeline-event-item">
+        <div class="event-meta">
+          <time datetime="${escapeHtml(event.occurredAt)}">#${event.sequence}</time>
+          <strong>${escapeHtml(event.type)}</strong>
+        </div>
+        <span class="event-payload">${escapeHtml(payload)}</span>
+      </li>`;
     })
     .join('');
-  return `<section data-event-timeline aria-labelledby="event-timeline-title">
-  <h2 id="event-timeline-title">事件时间线</h2>
-  <ol>${items || '<li data-status="empty-events">暂无事件</li>'}</ol>
+  return `<section data-event-timeline aria-labelledby="event-timeline-title" class="timeline-container">
+  <h2 id="event-timeline-title">运行日志与证据链</h2>
+  <ol class="timeline-list">${items || '<li data-status="empty-events">暂无事件</li>'}</ol>
 </section>`;
 }

@@ -1,3 +1,5 @@
+import { existsSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { AppServer } from '../runtime/app-server.js';
 import type { AppServerContract } from '../runtime/app-server.js';
 import type { AnyRuntimeEvent, Approval, Plan, Thread, Turn } from '../runtime/protocol.js';
@@ -68,6 +70,8 @@ export interface DesktopSnapshot {
   readonly plan?: DesktopPlanView;
   readonly approval?: DesktopApprovalView;
   readonly events: readonly DesktopEventDto[];
+  readonly workspaceFiles?: readonly string[];
+  readonly artifactFiles?: readonly string[];
 }
 
 export type DesktopApprovalDecision = 'approved' | 'rejected';
@@ -181,6 +185,25 @@ export class DesktopSession {
     const turn = this.activeTurnId === undefined ? undefined : this.server.getTurn(this.activeTurnId);
     const plan = turn === undefined ? undefined : latestPlan(events, turn.id);
     const approval = turn === undefined ? undefined : latestApproval(events, turn.id);
+    const workspaceRoot = this.shell.view().workspaceRoot;
+    let workspaceFiles: string[] | undefined;
+    let artifactFiles: string[] | undefined;
+    if (workspaceRoot && existsSync(workspaceRoot)) {
+      try {
+        workspaceFiles = readdirSync(workspaceRoot, { withFileTypes: true })
+          .filter((e) => e.isFile() && !e.name.startsWith('.'))
+          .map((e) => e.name);
+        const artifactsPath = join(workspaceRoot, 'artifacts');
+        if (existsSync(artifactsPath)) {
+          artifactFiles = readdirSync(artifactsPath, { withFileTypes: true })
+            .filter((e) => e.isFile() && !e.name.startsWith('.'))
+            .map((e) => e.name);
+        }
+      } catch {
+        // ignore read errors
+      }
+    }
+
     return {
       shell: this.shell.view(),
       home: this.home.view(),
@@ -190,6 +213,8 @@ export class DesktopSession {
       ...(plan === undefined ? {} : { plan: toPlanView(plan, approval) }),
       ...(approval === undefined ? {} : { approval: toApprovalView(approval) }),
       events: events.map(toEventDto),
+      ...(workspaceFiles === undefined ? {} : { workspaceFiles }),
+      ...(artifactFiles === undefined ? {} : { artifactFiles }),
     };
   }
 

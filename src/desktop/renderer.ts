@@ -27,7 +27,10 @@ function render(next: DesktopSnapshot): void {
           ...(next.approval === undefined ? {} : { approval: next.approval }),
         });
   root.innerHTML = `<div class="desktop-shell">
-  ${renderAppShell(next.shell)}
+  ${renderAppShell(next.shell, {
+    ...(next.workspaceFiles ? { workspaceFiles: next.workspaceFiles } : {}),
+    ...(next.artifactFiles ? { artifactFiles: next.artifactFiles } : {}),
+  })}
   <section data-desktop-content>${routeContent}</section>
   ${renderEventTimeline(next.events)}
   <p id="desktop-feedback" role="status" aria-live="polite"></p>
@@ -58,37 +61,87 @@ root.addEventListener('click', (event) => {
     return;
   }
   const button = target.closest<HTMLButtonElement>('button');
-  if (!button || snapshot === undefined) {
-    return;
-  }
-  const quickTask = button.dataset.quickTask;
-  if (quickTask !== undefined) {
-    void apply(() => window.agentDesktop.chooseQuickTask(quickTask));
-    return;
-  }
-  const route = button.dataset.route;
-  if (route !== undefined) {
-    void apply(() => window.agentDesktop.navigate(route as AppRoute));
-    return;
-  }
-  switch (button.dataset.action) {
-    case 'select-workspace':
-      void apply(() => window.agentDesktop.selectWorkspace(), '工作区已选择');
+  if (button && snapshot !== undefined) {
+    if (button.classList.contains('badge-remove-btn')) {
+      const badge = button.closest('.prompt-active-badge');
+      if (badge) {
+        (badge as HTMLElement).style.display = 'none';
+      }
       return;
-    case 'submit-plan':
+    }
+    const category = button.dataset.category;
+    if (category !== undefined) {
+      const categoryPrompts: Record<string, string> = {
+        excel: '读取工作区 sales.csv，使用 ExcelJS 生成包含跨表求和公式的销售报表 sales-summary.xlsx',
+        word: '读取工作区 meeting-notes.md，使用 docx 生成格式规范的大纲周报 weekly-meeting-report.docx',
+        clean: '清洗多源办公数据并剔除异常值，生成规整的待分析表格',
+        verify: '核验 artifacts 产物物理完整性与安全哈希（解构 ZIP/OpenXML 校验核心部件非空）',
+        custom: '编排自定义办公自动化复合任务并在双重沙箱中安全执行',
+      };
+      const prompt = categoryPrompts[category];
+      if (prompt) {
+        void apply(
+          () => window.agentDesktop.setTaskInput(prompt),
+          `已切换至【${button.textContent?.trim() ?? category}】场景`,
+        );
+      }
+      return;
+    }
+    const quickTask = button.dataset.quickTask;
+    if (quickTask !== undefined) {
+      void apply(() => window.agentDesktop.chooseQuickTask(quickTask));
+      return;
+    }
+    const route = button.dataset.route;
+    if (route !== undefined) {
+      void apply(() => window.agentDesktop.navigate(route as AppRoute));
+      return;
+    }
+    switch (button.dataset.action) {
+      case 'select-workspace':
+        void apply(() => window.agentDesktop.selectWorkspace(), '工作区已选择');
+        return;
+      case 'submit-plan':
+        void apply(() => window.agentDesktop.submitPlan(), '方案已生成，请审核后决定是否执行');
+        return;
+      case 'approve-plan':
+        void apply(() => window.agentDesktop.respondApproval('approved'), '已批准执行');
+        return;
+      case 'reject-plan':
+        void apply(() => window.agentDesktop.respondApproval('rejected'), '已拒绝执行');
+        return;
+      case 'stop-task':
+        void apply(() => window.agentDesktop.stopTask(), '任务已停止');
+        return;
+      default:
+        break;
+    }
+  }
+
+  const treeFile = target.closest<HTMLElement>('.tree-file');
+  if (treeFile && snapshot !== undefined) {
+    const rawText = treeFile.textContent?.trim() ?? '';
+    const match = rawText.match(/[📄📊]\s*([^\s(]+)/);
+    const fileName = match ? match[1] : undefined;
+    if (fileName) {
+      const current = snapshot.home.taskInput ?? '';
+      const updated = current ? `${current} ${fileName}` : `处理工作区文件 ${fileName} `;
+      void apply(() => window.agentDesktop.setTaskInput(updated), `已将 ${fileName} 加入任务输入`);
+    }
+  }
+});
+
+root.addEventListener('keydown', (event) => {
+  if (
+    event.target instanceof HTMLTextAreaElement &&
+    event.target.id === 'task-input' &&
+    (event.ctrlKey || event.metaKey) &&
+    event.key === 'Enter'
+  ) {
+    event.preventDefault();
+    if (snapshot?.home.canSubmit) {
       void apply(() => window.agentDesktop.submitPlan(), '方案已生成，请审核后决定是否执行');
-      return;
-    case 'approve-plan':
-      void apply(() => window.agentDesktop.respondApproval('approved'), '已批准执行');
-      return;
-    case 'reject-plan':
-      void apply(() => window.agentDesktop.respondApproval('rejected'), '已拒绝执行');
-      return;
-    case 'stop-task':
-      void apply(() => window.agentDesktop.stopTask(), '任务已停止');
-      return;
-    default:
-      break;
+    }
   }
 });
 

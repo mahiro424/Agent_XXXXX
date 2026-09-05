@@ -41,6 +41,9 @@ describe('DesktopSession', () => {
     session.setTaskInput('生成报告');
     expect(ready.home.workspaceRoot).toBeDefined();
     expect(session.snapshot().home.canSubmit).toBe(true);
+    expect(session.snapshot().workspaceFiles).toContain('sales.csv');
+    expect(session.snapshot().workspaceFiles).toContain('meeting-notes.md');
+    expect(session.snapshot().workspaceFiles).toContain('decisions.txt');
     expect(session.snapshot()).not.toHaveProperty('server');
     expect(JSON.stringify(session.snapshot())).not.toContain('AppServer');
     expect(JSON.stringify(session.snapshot())).not.toContain('Sandbox');
