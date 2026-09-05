@@ -19,6 +19,11 @@ import { LocalDocumentEngine } from './document-engine.js';
 import type { WorkspaceDocumentEngine } from './document-engine.js';
 import { EvidenceVerifier } from './verifier.js';
 import type { VerificationRequest, VerificationResult } from './verifier.js';
+import {
+  DEFAULT_AGENT_TOOLS,
+  OpenAICompatibleModelProvider,
+} from './model-provider.js';
+import type { ModelConfig, ModelProvider } from './model-provider.js';
 import type {
   AnyRuntimeEvent,
   Approval,
@@ -43,6 +48,8 @@ export interface RuntimeEngineOptions {
   readonly documentEngine?: WorkspaceDocumentEngine;
   readonly eventLogPath?: string;
   readonly eventStore?: RuntimeEventStore;
+  readonly modelProvider?: ModelProvider;
+  readonly modelConfig?: ModelConfig;
 }
 
 export interface RespondApprovalInput {
@@ -73,7 +80,7 @@ export class RuntimeEngine {
   private readonly approvals = new Map<string, Approval>();
   private readonly pausedTurnStatuses = new Map<string, TurnStatus>();
   private readonly log: EventLog;
-  private readonly model: FakeModel;
+  private readonly model: ModelProvider;
   private readonly toolAdapter: FakeToolAdapter;
   private readonly verifier: FakeVerifier;
   private readonly documentEngine: WorkspaceDocumentEngine;
@@ -95,7 +102,16 @@ export class RuntimeEngine {
         ? { initialEvents: persistedEvents }
         : { store: eventStore, initialEvents: persistedEvents };
     this.log = new EventLog(this.now, this.createId, eventLogOptions);
-    this.model = new FakeModel(this.createId);
+    if (options.modelProvider !== undefined) {
+      this.model = options.modelProvider;
+    } else if (
+      options.modelConfig !== undefined &&
+      options.modelConfig.provider === 'openai-compatible'
+    ) {
+      this.model = new OpenAICompatibleModelProvider(options.modelConfig, this.createId);
+    } else {
+      this.model = new FakeModel(this.createId);
+    }
     this.toolAdapter = new FakeToolAdapter(options.scenario, this.createId);
     this.verifier = new FakeVerifier(options.scenario, this.createId);
     this.documentEngine = options.documentEngine ?? new LocalDocumentEngine();
@@ -166,7 +182,69 @@ export class RuntimeEngine {
       payload: turn,
     });
 
-    const plan = this.model.proposePlan(turn.id);
+    const planInput = {
+      turnId: turn.id,
+      userInput: input.input,
+      workspaceFiles: this.getWorkspaceFiles(thread.id),
+      tools: DEFAULT_AGENT_TOOLS,
+    };
+    const planOrPromise = this.model.proposePlan(planInput);
+    if (planOrPromise instanceof Promise) {
+      this.handleAsyncPlan(thread, turn, planOrPromise);
+      return turn;
+    }
+
+    this.recordProposedPlan(thread, turn, planOrPromise);
+    return turn;
+  }
+
+  public async startTurnAsync(input: StartTurnInput): Promise<Turn> {
+    const thread = this.requireThread(input.threadId);
+    if (thread.status !== 'active') {
+      throw new Error(`thread ${thread.id} is ${thread.status}`);
+    }
+
+    const timestamp = this.now();
+    const turn: Turn = {
+      id: this.createId('turn'),
+      threadId: thread.id,
+      input: input.input,
+      status: 'awaiting_approval',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    this.turns.set(turn.id, turn);
+    this.log.append({
+      type: 'turn.started',
+      threadId: thread.id,
+      turnId: turn.id,
+      payload: turn,
+    });
+
+    const planInput = {
+      turnId: turn.id,
+      userInput: input.input,
+      workspaceFiles: this.getWorkspaceFiles(thread.id),
+      tools: DEFAULT_AGENT_TOOLS,
+    };
+    const plan = await this.model.proposePlan(planInput);
+    this.recordProposedPlan(thread, turn, plan);
+    return this.getTurn(turn.id);
+  }
+
+  private getWorkspaceFiles(threadId: string): readonly string[] {
+    const sandbox = this.sandboxes.get(threadId);
+    if (!sandbox) {
+      return [];
+    }
+    try {
+      return sandbox.listFiles();
+    } catch {
+      return [];
+    }
+  }
+
+  private recordProposedPlan(thread: Thread, turn: Turn, plan: Plan): void {
     this.plans.set(plan.id, plan);
     this.log.append({
       type: 'plan.proposed',
@@ -175,12 +253,15 @@ export class RuntimeEngine {
       payload: plan,
     });
 
+    const hasApprovalRequired = plan.steps.some((s) => s.requiresApproval);
     const approval: Approval = {
       id: this.createId('approval'),
       turnId: turn.id,
       planId: plan.id,
       status: 'pending',
-      reason: 'the plan includes a workspace write action',
+      reason: hasApprovalRequired
+        ? 'the plan includes an action requiring user approval'
+        : 'the plan is ready for user review',
     };
     this.approvals.set(approval.id, approval);
     this.log.append({
@@ -189,8 +270,16 @@ export class RuntimeEngine {
       turnId: turn.id,
       payload: approval,
     });
+  }
 
-    return turn;
+  private handleAsyncPlan(thread: Thread, turn: Turn, planPromise: Promise<Plan>): void {
+    planPromise
+      .then((plan) => {
+        this.recordProposedPlan(thread, turn, plan);
+      })
+      .catch(() => {
+        this.updateTurn(thread, turn, 'failed');
+      });
   }
 
   public respondApproval(input: RespondApprovalInput): Approval {

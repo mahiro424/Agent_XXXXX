@@ -1,6 +1,7 @@
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   realpathSync,
   readFileSync,
   statSync,
@@ -81,6 +82,16 @@ export class LocalWorkspaceSandbox {
       this.assertRealPathInsideRoot(absolutePath);
     }
     return absolutePath;
+  }
+
+  public listFiles(): readonly string[] {
+    if (!existsSync(this.rootDir)) {
+      return [];
+    }
+    const entries = readdirSync(this.rootDir, { withFileTypes: true });
+    return entries
+      .filter((e) => e.isFile())
+      .map((e) => e.name);
   }
 
   public readFile(targetPath: string): string {

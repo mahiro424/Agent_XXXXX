@@ -19,10 +19,13 @@ const defaultScenario: Required<FakeScenario> = {
   verification: 'verified',
 };
 
-export class FakeModel {
+import type { ModelPlanInput, ModelProvider } from './model-provider.js';
+
+export class FakeModel implements ModelProvider {
   public constructor(private readonly createId: RuntimeIdFactory) {}
 
-  public proposePlan(turnId: string): Plan {
+  public proposePlan(turnIdOrInput: string | ModelPlanInput): Plan {
+    const turnId = typeof turnIdOrInput === 'string' ? turnIdOrInput : turnIdOrInput.turnId;
     const step: PlanStep = {
       id: this.createId('plan-step'),
       title: '读取并生成会议周报',

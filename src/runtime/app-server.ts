@@ -16,6 +16,7 @@ import type {
 export interface AppServerContract {
   createThread(input: CreateThreadInput): Thread;
   startTurn(input: StartTurnInput): Turn;
+  startTurnAsync?(input: StartTurnInput): Promise<Turn>;
   respondApproval(input: RespondApprovalInput): Approval;
   pause(threadId: string): void;
   resumeThread(threadId: string): void;
@@ -55,6 +56,10 @@ export class AppServer implements AppServerContract {
 
   public startTurn(input: StartTurnInput): Turn {
     return this.runtime.startTurn(input);
+  }
+
+  public async startTurnAsync(input: StartTurnInput): Promise<Turn> {
+    return this.runtime.startTurnAsync(input);
   }
 
   public respondApproval(input: RespondApprovalInput): Approval {
