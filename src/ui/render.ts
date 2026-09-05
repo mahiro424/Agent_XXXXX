@@ -24,16 +24,23 @@ export function renderAppShell(
   view: AppShellView,
   context?: AppShellRenderContext,
 ): string {
-  const nav = view.navItems
+  // Only render active, functional navigation buttons
+  const functionalNav = [
+    { id: 'demo-home', label: '新建会话' },
+    ...(view.threadId || view.route === 'task-plan'
+      ? [{ id: 'task-plan', label: '任务方案与审批' }]
+      : []),
+  ];
+  const nav = functionalNav
     .map(
       (item) =>
-        `<button type="button" data-route="${item.id}" aria-current="${
+        `<button type="button" class="nav-btn" data-route="${item.id}" aria-current="${
           view.route === item.id ? 'page' : 'false'
-        }">${escapeHtml(item.label)}</button>`,
+        }"><span class="nav-icon">${item.id === 'demo-home' ? '💬' : '📋'}</span><span>${escapeHtml(item.label)}</span></button>`,
     )
     .join('');
   const workspace = view.workspaceRoot
-    ? `<span data-status="workspace">${escapeHtml(view.workspaceRoot)}</span>`
+    ? `<span data-status="workspace" title="${escapeHtml(view.workspaceRoot)}">📁 ${escapeHtml(view.workspaceRoot)}</span>`
     : '<span data-status="workspace">尚未选择工作区</span>';
   const disabled = view.disabledReason
     ? `<p role="status" data-status="disabled-reason">${escapeHtml(view.disabledReason)}</p>`
@@ -47,26 +54,26 @@ export function renderAppShell(
     : 'demo-workspace';
 
   const defaultWorkspaceFiles = [
-    'sales.csv (数据源)',
-    'meeting-notes.md (会议要点)',
-    'decisions.txt (决议)',
+    'sales.csv',
+    'meeting-notes.md',
+    'decisions.txt',
   ];
   const workspaceFilesList = (context?.workspaceFiles && context.workspaceFiles.length > 0
     ? context.workspaceFiles
     : defaultWorkspaceFiles)
-    .map((file) => `<div class="tree-file"><span>📄 ${escapeHtml(file)}</span></div>`)
+    .map((file) => `<div class="tree-file" data-filename="${escapeHtml(file)}" title="点击插入提示词"><span>📄 ${escapeHtml(file)}</span></div>`)
     .join('');
 
   const defaultArtifactFiles = [
-    'sales-summary.xlsx (5分)',
-    'weekly-meeting-report.docx (4分)',
+    'sales-summary.xlsx',
+    'weekly-meeting-report.docx',
   ];
   const artifactFilesList = (context?.artifactFiles && context.artifactFiles.length > 0
     ? context.artifactFiles
     : defaultArtifactFiles)
     .map(
       (file) =>
-        `<div class="tree-file verified"><span>📊 ${escapeHtml(file)}</span><span class="badge-tag">已验</span></div>`,
+        `<div class="tree-file verified" data-filename="${escapeHtml(file)}" title="点击插入提示词"><span>📊 ${escapeHtml(file)}</span><span class="badge-tag">已验</span></div>`,
     )
     .join('');
 
@@ -80,20 +87,9 @@ export function renderAppShell(
       </div>
     </div>
     <div class="nav-links">${nav}</div>
-    <div class="sidebar-collapsible">
-      <div class="collapsible-title">
-        <span>定时任务</span>
-        <span class="arrow-icon">▾</span>
-      </div>
-      <div class="collapsible-list">
-        <div class="task-item"><span>⏱️ 每周销售数据汇总</span><span class="chevron">&gt;</span></div>
-        <div class="task-item"><span>⏱️ 周五会议纪要自动归档</span><span class="chevron">&gt;</span></div>
-      </div>
-    </div>
-    <div class="sidebar-collapsible workspace-tree-section">
-      <div class="collapsible-title">
+    <div class="workspace-tree-section">
+      <div class="tree-section-header">
         <span>本地工作空间 (Local Workspace)</span>
-        <span class="arrow-icon">▾</span>
       </div>
       <div class="workspace-group">
         <div class="folder-title">📁 ${escapeHtml(workspaceName)} (输入源)</div>
@@ -107,11 +103,14 @@ export function renderAppShell(
   </nav>
   <header aria-label="全局状态">
     <div class="header-left">
-      <span class="header-tool-icon">☰</span>
-      <span class="header-tool-icon">⚲</span>
-      <span class="header-tool-icon">🔍</span>
+      <button type="button" class="sidebar-toggle-btn" data-action="toggle-sidebar" title="收起/展开侧边栏 (Ctrl+B)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+          <line x1="9" y1="3" x2="9" y2="21"></line>
+        </svg>
+      </button>
+      <span class="header-center-title">Agent_XXXXX</span>
     </div>
-    <div class="header-center-title">Agent_XXXXX</div>
     <div class="header-right">
       ${workspace}
       <span data-status="sandbox" class="status-pill green">● ${
@@ -175,7 +174,6 @@ export function renderDemoHome(view: DemoHomeView): string {
 
       <div class="prompt-card-bottom">
         <div class="controls-left">
-          <button type="button" class="add-btn" title="添加工作区附件">+</button>
           <div class="workspace-status">
             ${workspace}
             <button type="button" data-action="select-workspace" class="select-workspace-btn">选择工作区</button>
@@ -265,6 +263,9 @@ export function renderTaskPlan(view: TaskPlanRenderInput): string {
 </section>`;
 
   return `<section data-page="task-plan" aria-labelledby="task-plan-title" class="task-plan-container">
+  <div class="plan-top-nav">
+    <button type="button" class="btn-return-home" data-route="demo-home">← 返回新会话</button>
+  </div>
   <div class="plan-header-box">
     <h2 id="task-plan-title">任务计划与审批</h2>
     <div class="status-tags">

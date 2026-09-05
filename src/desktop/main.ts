@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { DesktopSession } from './session.js';
@@ -123,6 +123,13 @@ function createMainWindow(): BrowserWindow {
     height: 800,
     minWidth: 1024,
     minHeight: 700,
+    autoHideMenuBar: true,
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: '#ffffff',
+      symbolColor: '#0f172a',
+      height: 44,
+    },
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -144,6 +151,7 @@ function createMainWindow(): BrowserWindow {
 
 async function startDesktop(): Promise<void> {
   await app.whenReady();
+  Menu.setApplicationMenu(null);
   const eventLogPath = join(app.getPath('userData'), 'runtime-events.jsonl');
   desktopSession = new DesktopSession({ eventLogPath });
   registerIpcHandlers();

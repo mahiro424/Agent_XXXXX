@@ -55,16 +55,20 @@
       .desktop-shell {
         display: grid;
         grid-template-columns: 260px minmax(0, 1fr) 300px;
-        grid-template-rows: 48px 1fr 26px;
+        grid-template-rows: 44px 1fr 26px;
         width: 100vw;
         height: 100vh;
         overflow: hidden;
+        transition: grid-template-columns 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+      .desktop-shell.sidebar-collapsed {
+        grid-template-columns: 0px minmax(0, 1fr) 300px;
       }
       [data-page="app-shell"] {
         display: contents;
       }
 
-      /* Top Global Bar */
+      /* Top Global Bar / Modern Integrated Titlebar */
       [data-page="app-shell"] > header {
         grid-column: 1 / -1;
         grid-row: 1;
@@ -72,35 +76,48 @@
         align-items: center;
         justify-content: space-between;
         padding: 0 16px;
+        padding-right: 140px; /* Space for native Windows window buttons (minimize, maximize, close) */
         background: #ffffff;
         border-bottom: 1px solid #e2e8f0;
         z-index: 20;
+        -webkit-app-region: drag;
+        user-select: none;
       }
       .header-left {
         display: flex;
         align-items: center;
-        gap: 12px;
+        gap: 10px;
+        -webkit-app-region: no-drag;
+      }
+      .sidebar-toggle-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        border-radius: 6px;
+        background: transparent;
         color: #64748b;
-        font-size: 15px;
-      }
-      .header-tool-icon {
+        border: 1px solid transparent;
         cursor: pointer;
-        padding: 2px 4px;
-        border-radius: 4px;
+        transition: all 0.15s ease;
       }
-      .header-tool-icon:hover {
+      .sidebar-toggle-btn:hover {
         background: #f1f5f9;
         color: #0f172a;
+        border-color: #e2e8f0;
       }
       .header-center-title {
-        font-size: 14px;
+        font-size: 13px;
         font-weight: 600;
         color: #0f172a;
+        letter-spacing: -0.01em;
       }
       .header-right {
         display: flex;
         align-items: center;
         gap: 8px;
+        -webkit-app-region: no-drag;
       }
       .header-right [data-status="workspace"] {
         font-size: 11px;
@@ -108,7 +125,7 @@
         color: #475569;
         padding: 4px 8px;
         border-radius: 6px;
-        max-width: 200px;
+        max-width: 220px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -150,15 +167,27 @@
         border-right: 1px solid #e2e8f0;
         display: flex;
         flex-direction: column;
-        gap: 10px;
+        gap: 12px;
         padding: 12px;
         overflow-y: auto;
+        overflow-x: hidden;
+        width: 260px;
+        box-sizing: border-box;
+        transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease, width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+      .desktop-shell.sidebar-collapsed [data-page="app-shell"] > nav {
+        width: 0;
+        padding: 0;
+        border-right: none;
+        opacity: 0;
+        pointer-events: none;
+        transform: translateX(-100%);
       }
       .sidebar-brand {
         display: flex;
         align-items: center;
         gap: 8px;
-        padding: 4px 6px 8px;
+        padding: 4px 6px 6px;
       }
       .brand-avatar {
         width: 26px;
@@ -188,68 +217,53 @@
       .nav-links {
         display: flex;
         flex-direction: column;
-        gap: 2px;
+        gap: 4px;
       }
-      .nav-links button {
+      .nav-btn {
         width: 100%;
         text-align: left;
-        background: transparent;
-        color: #475569;
-        font-size: 13px;
-        font-weight: 500;
-        padding: 7px 10px;
-        border-radius: 8px;
-      }
-      .nav-links button:hover {
         background: #f8fafc;
-        color: #0f172a;
+        color: #334155;
+        border: 1px solid #e2e8f0;
+        font-size: 13px;
+        font-weight: 600;
+        padding: 8px 12px;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+        transition: all 0.15s ease;
       }
-      .nav-links button[aria-current="page"] {
+      .nav-btn:hover {
         background: #f1f5f9;
         color: #0f172a;
-        font-weight: 600;
+        border-color: #cbd5e1;
       }
-      .sidebar-collapsible {
-        margin-top: 4px;
+      .nav-btn[aria-current="page"] {
+        background: #0f172a;
+        color: #ffffff;
+        border-color: #0f172a;
+      }
+      .nav-icon {
+        font-size: 14px;
+      }
+      .workspace-tree-section {
+        margin-top: 8px;
         border-top: 1px solid #f1f5f9;
-        padding-top: 8px;
-      }
-      .collapsible-title {
+        padding-top: 10px;
         display: flex;
-        justify-content: space-between;
-        align-items: center;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .tree-section-header {
         font-size: 11px;
         font-weight: 600;
         color: #94a3b8;
-        padding: 4px 6px;
-      }
-      .collapsible-list {
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-        margin-top: 4px;
-      }
-      .task-item {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        font-size: 12px;
-        color: #475569;
-        padding: 5px 8px;
-        border-radius: 6px;
-        cursor: pointer;
-      }
-      .task-item:hover {
-        background: #f8fafc;
-        color: #0f172a;
-      }
-      .workspace-tree-section {
-        margin-top: 4px;
-        border-top: 1px solid #f1f5f9;
-        padding-top: 8px;
+        padding: 2px 6px;
       }
       .workspace-group {
-        margin-top: 6px;
+        margin-top: 4px;
       }
       .folder-title {
         font-size: 11px;
@@ -269,17 +283,18 @@
         display: flex;
         flex-direction: column;
         gap: 2px;
-        padding-left: 8px;
+        padding-left: 6px;
       }
       .tree-file {
         display: flex;
         justify-content: space-between;
         align-items: center;
         font-size: 11px;
-        color: #64748b;
-        padding: 4px 6px;
-        border-radius: 4px;
+        color: #475569;
+        padding: 5px 8px;
+        border-radius: 6px;
         cursor: pointer;
+        transition: all 0.15s ease;
       }
       .tree-file:hover {
         background: #f1f5f9;
@@ -568,6 +583,27 @@
         border: 1px solid #e2e8f0;
         border-radius: 16px;
         padding: 24px;
+      }
+      .plan-top-nav {
+        margin-bottom: 12px;
+      }
+      .btn-return-home {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: #f1f5f9;
+        color: #334155;
+        border: 1px solid #cbd5e1;
+        padding: 5px 12px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.15s ease;
+      }
+      .btn-return-home:hover {
+        background: #e2e8f0;
+        color: #0f172a;
       }
       .plan-header-box {
         display: flex;

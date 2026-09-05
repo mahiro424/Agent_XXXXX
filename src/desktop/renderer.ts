@@ -14,6 +14,15 @@ if (appRoot === null) {
 const root: HTMLElement = appRoot;
 
 let snapshot: DesktopSnapshot | undefined;
+let sidebarCollapsed = false;
+
+function toggleSidebar(): void {
+  sidebarCollapsed = !sidebarCollapsed;
+  const shell = document.querySelector<HTMLElement>('.desktop-shell');
+  if (shell) {
+    shell.classList.toggle('sidebar-collapsed', sidebarCollapsed);
+  }
+}
 
 function render(next: DesktopSnapshot): void {
   snapshot = next;
@@ -26,7 +35,7 @@ function render(next: DesktopSnapshot): void {
           ...(next.plan === undefined ? {} : { plan: next.plan }),
           ...(next.approval === undefined ? {} : { approval: next.approval }),
         });
-  root.innerHTML = `<div class="desktop-shell">
+  root.innerHTML = `<div class="desktop-shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}">
   ${renderAppShell(next.shell, {
     ...(next.workspaceFiles ? { workspaceFiles: next.workspaceFiles } : {}),
     ...(next.artifactFiles ? { artifactFiles: next.artifactFiles } : {}),
@@ -61,6 +70,12 @@ root.addEventListener('click', (event) => {
     return;
   }
   const button = target.closest<HTMLButtonElement>('button');
+  if (button) {
+    if (button.dataset.action === 'toggle-sidebar') {
+      toggleSidebar();
+      return;
+    }
+  }
   if (button && snapshot !== undefined) {
     if (button.classList.contains('badge-remove-btn')) {
       const badge = button.closest('.prompt-active-badge');
@@ -156,6 +171,13 @@ root.addEventListener('change', (event) => {
   const target = event.target;
   if (target instanceof HTMLSelectElement && target.dataset.action === 'set-model-mode') {
     void apply(() => window.agentDesktop.setModelMode(target.value as 'fake' | 'live'));
+  }
+});
+
+window.addEventListener('keydown', (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'b') {
+    event.preventDefault();
+    toggleSidebar();
   }
 });
 
