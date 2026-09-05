@@ -2,6 +2,8 @@ import type {
   DesktopApprovalView,
   DesktopEventDto,
   DesktopPlanView,
+  DesktopThreadView,
+  DesktopTurnView,
 } from '../desktop/session.js';
 import type { AppShellView } from './app-shell.js';
 import type { DemoHomeView } from './demo-home.js';
@@ -24,27 +26,21 @@ export function renderAppShell(
   view: AppShellView,
   context?: AppShellRenderContext,
 ): string {
-  // Only render active, functional navigation buttons
+  // Navigation: only cohesive session workbench
   const functionalNav = [
     { id: 'demo-home', label: '新建会话' },
-    ...(view.threadId || view.route === 'task-plan'
-      ? [{ id: 'task-plan', label: '任务方案与审批' }]
-      : []),
   ];
   const nav = functionalNav
     .map(
       (item) =>
         `<button type="button" class="nav-btn" data-route="${item.id}" aria-current="${
           view.route === item.id ? 'page' : 'false'
-        }"><span class="nav-icon">${item.id === 'demo-home' ? '💬' : '📋'}</span><span>${escapeHtml(item.label)}</span></button>`,
+        }"><span class="nav-icon">💬</span><span>${escapeHtml(item.label)}</span></button>`,
     )
     .join('');
   const workspace = view.workspaceRoot
     ? `<span data-status="workspace" title="${escapeHtml(view.workspaceRoot)}">📁 ${escapeHtml(view.workspaceRoot)}</span>`
     : '<span data-status="workspace">尚未选择工作区</span>';
-  const disabled = view.disabledReason
-    ? `<p role="status" data-status="disabled-reason">${escapeHtml(view.disabledReason)}</p>`
-    : '';
   const stop = view.canStopTask
     ? '<button type="button" data-action="stop-task">停止任务</button>'
     : '';
@@ -104,7 +100,7 @@ export function renderAppShell(
   <header aria-label="全局状态">
     <div class="header-left">
       <button type="button" class="sidebar-toggle-btn" data-action="toggle-sidebar" title="收起/展开侧边栏 (Ctrl+B)">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="pointer-events: none;">
           <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
           <line x1="9" y1="3" x2="9" y2="21"></line>
         </svg>
@@ -126,23 +122,102 @@ export function renderAppShell(
     </div>
   </header>
   <section data-route-content aria-live="polite">${escapeHtml(view.route)}</section>
-  ${disabled}
 </main>`;
 }
 
-export function renderDemoHome(view: DemoHomeView): string {
+export interface DemoHomeRenderContext {
+  readonly thread?: DesktopThreadView | undefined;
+  readonly turn?: DesktopTurnView | undefined;
+  readonly plan?: DesktopPlanView | undefined;
+  readonly approval?: DesktopApprovalView | undefined;
+}
+
+export function renderDemoHome(
+  view: DemoHomeView,
+  context?: DemoHomeRenderContext,
+): string {
   const quickTasks = view.quickTasks
     .map(
       (task) =>
         `<button type="button" class="quick-task-btn" data-quick-task="${escapeHtml(task)}">${escapeHtml(task)} ↘</button>`,
     )
     .join('');
-  const disabled = view.disabledReason
-    ? `<p role="status" data-status="disabled-reason">${escapeHtml(view.disabledReason)}</p>`
+
+  const workspaceName = view.workspaceRoot
+    ? view.workspaceRoot.split(/[\\/]/).pop() ?? 'workspace'
     : '';
-  const workspace = view.workspaceRoot
-    ? `<span data-status="workspace">${escapeHtml(view.workspaceRoot)}</span>`
-    : '<span data-status="workspace">尚未选择工作区</span>';
+
+  const workspacePill = view.workspaceRoot
+    ? `<button type="button" class="workspace-chip selected" data-action="select-workspace" title="${escapeHtml(view.workspaceRoot)}">
+        <span class="chip-icon">📁</span>
+        <span class="chip-text" data-status="workspace">${escapeHtml(workspaceName)}</span>
+        <span class="chip-arrow">▾</span>
+      </button>`
+    : `<button type="button" class="workspace-chip unselected" data-action="select-workspace" title="尚未选择工作区">
+        <span class="chip-icon">+</span>
+        <span class="chip-text" data-status="workspace">尚未选择工作区</span>
+        <span class="chip-arrow">▾</span>
+      </button>`;
+
+  const permissionSelect = `
+    <div class="permission-chip-wrap">
+      <span class="permission-shield-icon">🛡️</span>
+      <label for="permission-mode-select" class="sr-only">文件权限模式</label>
+      <select id="permission-mode-select" class="permission-select" data-action="set-permission-mode" aria-label="文件权限模式">
+        <option value="full-access" ${view.permissionMode === 'full-access' ? 'selected' : ''}>完全访问权限</option>
+        <option value="sandbox-artifacts" ${view.permissionMode === 'sandbox-artifacts' ? 'selected' : ''}>沙箱写保护: 仅限 artifacts/ 目录</option>
+        <option value="ask-approval" ${view.permissionMode === 'ask-approval' ? 'selected' : ''}>按需审批写入</option>
+        <option value="read-only" ${view.permissionMode === 'read-only' ? 'selected' : ''}>仅只读访问</option>
+      </select>
+      <span class="chip-arrow">▾</span>
+    </div>`;
+
+  let inlineExecutionSection = '';
+  if (context?.approval && context.approval.status === 'pending') {
+    const steps = (context.plan?.steps ?? []).map((step, idx) => `
+      <div class="inline-step-item" data-plan-step="${escapeHtml(step.id)}">
+        <span class="step-badge">${idx + 1}</span>
+        <span class="step-title">${escapeHtml(step.title)}</span>
+        <span class="step-tool"><code>${escapeHtml(step.toolName)}</code></span>
+        <span class="step-risk ${escapeHtml(step.risk)}">风险：${escapeHtml(step.risk)}</span>
+      </div>
+    `).join('');
+    inlineExecutionSection = `
+      <div class="inline-card approval-card" data-approval-status="pending">
+        <div class="inline-card-header">
+          <span class="status-indicator yellow">●</span>
+          <strong>任务执行方案待审批 (按需审批模式)</strong>
+          <span class="approval-hint">${escapeHtml(context.approval.reason)}</span>
+        </div>
+        <div class="inline-steps-container">${steps}</div>
+        <div class="inline-approval-actions">
+          <button type="button" class="btn-approve" data-action="approve-plan">批准执行</button>
+          <button type="button" class="btn-reject" data-action="reject-plan">拒绝执行</button>
+        </div>
+      </div>`;
+  } else if (
+    context?.turn &&
+    (context.turn.status === 'completed' ||
+      context.turn.status === 'executing' ||
+      context.turn.status === 'verifying')
+  ) {
+    const steps = (context.plan?.steps ?? []).map((step) => `
+      <div class="inline-step-item completed" data-plan-step="${escapeHtml(step.id)}">
+        <span class="step-check">✓</span>
+        <span class="step-title">${escapeHtml(step.title)}</span>
+        <span class="step-tool"><code>${escapeHtml(step.toolName)}</code></span>
+      </div>
+    `).join('');
+    inlineExecutionSection = `
+      <div class="inline-card execution-card ${context.turn.status}">
+        <div class="inline-card-header">
+          <span class="status-indicator green">●</span>
+          <strong>${context.turn.status === 'completed' ? '任务已执行完成' : '任务正在执行中…'}</strong>
+          <span class="execution-mode-badge">${view.permissionMode === 'full-access' ? '完全访问权限 (已自动授权)' : '已授权'}</span>
+        </div>
+        <div class="inline-steps-container">${steps}</div>
+      </div>`;
+  }
 
   return `<main data-page="demo-home" data-state="${view.state}" class="surface-base">
   <section class="welcome" aria-labelledby="demo-home-title">
@@ -174,20 +249,18 @@ export function renderDemoHome(view: DemoHomeView): string {
 
       <div class="prompt-card-bottom">
         <div class="controls-left">
-          <div class="workspace-status">
-            ${workspace}
-            <button type="button" data-action="select-workspace" class="select-workspace-btn">选择工作区</button>
-          </div>
-          <span class="sandbox-shield-tag">🔒 沙箱写保护: 仅限 artifacts/ 目录</span>
+          <button type="button" class="btn-card-plus" data-action="select-workspace" title="添加工作区或附件文件">+</button>
         </div>
 
         <div class="controls-right">
-          <label for="model-mode" class="sr-only">模型模式</label>
-          <select id="model-mode" data-action="set-model-mode" aria-label="模型模式" class="model-select">
-            <option value="fake" ${view.modelMode === 'fake' ? 'selected' : ''}>Fake Model Demo</option>
-            <option value="live" ${view.modelMode === 'live' ? 'selected' : ''}>Live Model Demo</option>
-          </select>
-          <div class="model-status" data-status="model" style="display:none">模型：${escapeHtml(view.modelMode)}</div>
+          <div class="model-select-wrap">
+            <span class="model-add-icon">+</span>
+            <label for="model-mode" class="sr-only">模型选择</label>
+            <select id="model-mode" data-action="set-model-mode" aria-label="模型选择" class="model-select-chip">
+              <option value="live" ${view.modelMode === 'live' ? 'selected' : ''}>⚡ 智能模型 (DeepSeek-V3)</option>
+              <option value="fake" ${view.modelMode === 'fake' ? 'selected' : ''}>🧪 Fake Model Demo (离线极速)</option>
+            </select>
+          </div>
           <button type="button" class="submit-circle-btn" data-action="submit-plan" ${view.canSubmit ? '' : 'disabled'} title="${escapeHtml(view.submitLabel)}">
             ↑
           </button>
@@ -195,7 +268,12 @@ export function renderDemoHome(view: DemoHomeView): string {
       </div>
     </div>
 
-    ${disabled}
+    <div class="prompt-bottom-bar">
+      ${workspacePill}
+      ${permissionSelect}
+    </div>
+
+    ${inlineExecutionSection}
 
     <div class="features-summary-grid">
       <div class="summary-card">

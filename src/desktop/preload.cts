@@ -26,6 +26,8 @@ const api: DesktopApi = {
     ipcRenderer.invoke('desktop:navigate', route) as Promise<DesktopSnapshot>,
   setModelMode: (mode) =>
     ipcRenderer.invoke('desktop:set-model-mode', mode) as Promise<DesktopSnapshot>,
+  setPermissionMode: (mode) =>
+    ipcRenderer.invoke('desktop:set-permission-mode', mode) as Promise<DesktopSnapshot>,
   submitPlan: () => ipcRenderer.invoke('desktop:submit-plan') as Promise<DesktopSnapshot>,
   respondApproval: (decision: DesktopApprovalDecision) =>
     ipcRenderer.invoke('desktop:respond-approval', decision) as Promise<DesktopSnapshot>,

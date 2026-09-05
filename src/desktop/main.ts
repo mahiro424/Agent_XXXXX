@@ -1,11 +1,14 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron';
+import electronPkg from 'electron';
+import type { BrowserWindow as BrowserWindowType } from 'electron';
+const { app, BrowserWindow, dialog, ipcMain, Menu } = electronPkg;
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { DesktopSession } from './session.js';
 import type { DesktopApprovalDecision, DesktopSnapshot } from './session.js';
 import type { AppRoute, ShellModelMode } from '../ui/app-shell.js';
+import type { FilePermissionMode } from '../ui/demo-home.js';
 
-let mainWindow: BrowserWindow | undefined;
+let mainWindow: BrowserWindowType | undefined;
 let desktopSession: DesktopSession | undefined;
 
 function requireSession(): DesktopSession {
@@ -21,6 +24,15 @@ function requireSnapshot(): DesktopSnapshot {
 
 function isModelMode(value: unknown): value is ShellModelMode {
   return value === 'fake' || value === 'live';
+}
+
+function isPermissionMode(value: unknown): value is FilePermissionMode {
+  return (
+    value === 'full-access' ||
+    value === 'sandbox-artifacts' ||
+    value === 'ask-approval' ||
+    value === 'read-only'
+  );
 }
 
 function isAppRoute(value: unknown): value is AppRoute {
@@ -95,6 +107,14 @@ function registerIpcHandlers(): void {
     sendState();
     return snapshot;
   });
+  ipcMain.handle('desktop:set-permission-mode', (_event, mode: unknown) => {
+    if (!isPermissionMode(mode)) {
+      throw new TypeError('unsupported permission mode');
+    }
+    const snapshot = requireSession().setPermissionMode(mode);
+    sendState();
+    return snapshot;
+  });
   ipcMain.handle('desktop:submit-plan', () => {
     const snapshot = requireSession().submitPlan();
     sendState();
@@ -115,7 +135,7 @@ function registerIpcHandlers(): void {
   });
 }
 
-function createMainWindow(): BrowserWindow {
+function createMainWindow(): BrowserWindowType {
   const preloadPath = fileURLToPath(new URL('./preload.cjs', import.meta.url));
   const indexPath = fileURLToPath(new URL('./index.html', import.meta.url));
   const window = new BrowserWindow({

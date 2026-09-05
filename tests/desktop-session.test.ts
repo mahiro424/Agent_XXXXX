@@ -90,4 +90,18 @@ describe('DesktopSession', () => {
     expect(stoppedSnapshot.turn?.status).toBe('cancelled');
     expect(stoppedSnapshot.events.some((event) => event.type === 'tool.started')).toBe(false);
   });
+
+  it('supports full-access permission mode with automatic approval and execution', () => {
+    const session = preparedSession();
+    session.setPermissionMode('full-access');
+    expect(session.snapshot().permissionMode).toBe('full-access');
+    expect(session.snapshot().home.permissionMode).toBe('full-access');
+
+    // In full-access mode, submitting a plan automatically approves and completes
+    const snapshot = session.submitPlan();
+    expect(snapshot.approval?.status).toBe('approved');
+    expect(snapshot.turn?.status).toBe('completed');
+    expect(snapshot.events.some((event) => event.type === 'tool.completed')).toBe(true);
+    expect(snapshot.events.some((event) => event.type === 'artifact.verified')).toBe(true);
+  });
 });

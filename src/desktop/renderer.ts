@@ -26,22 +26,18 @@ function toggleSidebar(): void {
 
 function render(next: DesktopSnapshot): void {
   snapshot = next;
-  const routeContent =
-    next.route === 'demo-home'
-      ? renderDemoHome(next.home)
-      : renderTaskPlan({
-          ...(next.thread === undefined ? {} : { threadStatus: next.thread.status }),
-          ...(next.turn === undefined ? {} : { turnStatus: next.turn.status }),
-          ...(next.plan === undefined ? {} : { plan: next.plan }),
-          ...(next.approval === undefined ? {} : { approval: next.approval }),
-        });
+  const routeContent = renderDemoHome(next.home, {
+    thread: next.thread,
+    turn: next.turn,
+    plan: next.plan,
+    approval: next.approval,
+  });
   root.innerHTML = `<div class="desktop-shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}">
   ${renderAppShell(next.shell, {
     ...(next.workspaceFiles ? { workspaceFiles: next.workspaceFiles } : {}),
     ...(next.artifactFiles ? { artifactFiles: next.artifactFiles } : {}),
   })}
   <section data-desktop-content>${routeContent}</section>
-  ${renderEventTimeline(next.events)}
   <p id="desktop-feedback" role="status" aria-live="polite"></p>
 </div>`;
 }
@@ -66,7 +62,7 @@ async function apply(action: () => Promise<DesktopSnapshot>, successMessage?: st
 
 root.addEventListener('click', (event) => {
   const target = event.target;
-  if (!(target instanceof HTMLElement)) {
+  if (!(target instanceof Element)) {
     return;
   }
   const button = target.closest<HTMLButtonElement>('button');
@@ -169,8 +165,15 @@ root.addEventListener('input', (event) => {
 
 root.addEventListener('change', (event) => {
   const target = event.target;
-  if (target instanceof HTMLSelectElement && target.dataset.action === 'set-model-mode') {
-    void apply(() => window.agentDesktop.setModelMode(target.value as 'fake' | 'live'));
+  if (target instanceof HTMLSelectElement) {
+    if (target.dataset.action === 'set-model-mode') {
+      void apply(() => window.agentDesktop.setModelMode(target.value as 'fake' | 'live'));
+    } else if (target.dataset.action === 'set-permission-mode') {
+      void apply(
+        () => window.agentDesktop.setPermissionMode(target.value as any),
+        `文件权限已切换为【${target.selectedOptions[0]?.text?.trim() ?? target.value}】`,
+      );
+    }
   }
 });
 

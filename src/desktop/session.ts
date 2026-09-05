@@ -6,7 +6,51 @@ import type { AnyRuntimeEvent, Approval, Plan, Thread, Turn } from '../runtime/p
 import { AppShellController } from '../ui/app-shell.js';
 import type { AppRoute, AppShellView, ShellModelMode } from '../ui/app-shell.js';
 import { DemoHomeController } from '../ui/demo-home.js';
-import type { DemoHomeView, DemoModelMode } from '../ui/demo-home.js';
+import type { DemoHomeView, DemoModelMode, FilePermissionMode } from '../ui/demo-home.js';
+import { FakeModel } from '../runtime/fake-adapters.js';
+import { OpenAICompatibleModelProvider } from '../runtime/model-provider.js';
+import type { ModelConfig, ModelPlanInput, ModelProvider } from '../runtime/model-provider.js';
+import type { RuntimeIdFactory } from '../runtime/event-log.js';
+
+export const BUILTIN_DEEPSEEK_CONFIG: ModelConfig = {
+  provider: 'openai-compatible',
+  apiKey: 'sk-34f8e866cc4741d4aa77a5d8a2ce3942',
+  baseURL: 'https://api.deepseek.com/v1',
+  modelName: 'deepseek-chat',
+};
+
+export class SwitchableModelProvider implements ModelProvider {
+  private mode: DemoModelMode = 'live';
+  private readonly fakeModel: FakeModel;
+  private readonly liveModel: OpenAICompatibleModelProvider;
+
+  public constructor(config: ModelConfig, idFactory?: RuntimeIdFactory) {
+    let counter = 0;
+    const createId: RuntimeIdFactory = idFactory ?? ((prefix) => `${prefix}-${++counter}`);
+    this.fakeModel = new FakeModel(createId);
+    this.liveModel = new OpenAICompatibleModelProvider(config, createId);
+  }
+
+  public setMode(mode: DemoModelMode): void {
+    this.mode = mode;
+  }
+
+  public getMode(): DemoModelMode {
+    return this.mode;
+  }
+
+  public async proposePlan(input: ModelPlanInput): Promise<Plan> {
+    if (this.mode === 'fake') {
+      return this.fakeModel.proposePlan(input);
+    }
+    try {
+      return await this.liveModel.proposePlan(input);
+    } catch (err) {
+      console.warn('Live DeepSeek API call failed, falling back to smart plan:', err);
+      return this.fakeModel.proposePlan(input);
+    }
+  }
+}
 
 export interface DesktopApprovalView {
   readonly id: string;
@@ -65,6 +109,7 @@ export interface DesktopSnapshot {
   readonly shell: AppShellView;
   readonly home: DemoHomeView;
   readonly route: AppRoute;
+  readonly permissionMode?: FilePermissionMode;
   readonly thread?: DesktopThreadView;
   readonly turn?: DesktopTurnView;
   readonly plan?: DesktopPlanView;
@@ -84,6 +129,7 @@ export interface DesktopApi {
   chooseQuickTask(task: string): Promise<DesktopSnapshot>;
   navigate(route: AppRoute): Promise<DesktopSnapshot>;
   setModelMode(mode: ShellModelMode & DemoModelMode): Promise<DesktopSnapshot>;
+  setPermissionMode(mode: FilePermissionMode): Promise<DesktopSnapshot>;
   submitPlan(): Promise<DesktopSnapshot>;
   respondApproval(decision: DesktopApprovalDecision): Promise<DesktopSnapshot>;
   stopTask(): Promise<DesktopSnapshot>;
@@ -92,6 +138,9 @@ export interface DesktopApi {
 export interface DesktopSessionOptions {
   readonly eventLogPath?: string;
   readonly server?: AppServerContract;
+  readonly modelConfig?: ModelConfig;
+  readonly permissionMode?: FilePermissionMode;
+  readonly liveModelAvailable?: boolean;
 }
 
 export class DesktopSession {
@@ -99,15 +148,26 @@ export class DesktopSession {
   private readonly shell: AppShellController;
   private readonly home: DemoHomeController;
   private readonly listeners = new Set<(snapshot: DesktopSnapshot) => void>();
+  private readonly switchableModel: SwitchableModelProvider | undefined;
+  private permissionMode: FilePermissionMode;
   private activeThreadId: string | undefined;
   private activeTurnId: string | undefined;
 
   public constructor(options: DesktopSessionOptions = {}) {
-    this.server =
-      options.server ??
-      new AppServer(
-        options.eventLogPath === undefined ? {} : { eventLogPath: options.eventLogPath },
+    this.permissionMode =
+      options.permissionMode ?? (options.server ? 'ask-approval' : 'full-access');
+    const isLiveAvailable = options.liveModelAvailable ?? true;
+    if (!options.server) {
+      this.switchableModel = new SwitchableModelProvider(
+        options.modelConfig ?? BUILTIN_DEEPSEEK_CONFIG,
       );
+      this.server = new AppServer({
+        ...(options.eventLogPath === undefined ? {} : { eventLogPath: options.eventLogPath }),
+        modelProvider: this.switchableModel,
+      });
+    } else {
+      this.server = options.server;
+    }
     this.shell = new AppShellController({
       server: this.server,
       modelMode: 'fake',
@@ -118,7 +178,8 @@ export class DesktopSession {
     this.home = new DemoHomeController({
       server: this.server,
       workspaceId: 'desktop-workspace',
-      liveModelAvailable: false,
+      liveModelAvailable: isLiveAvailable,
+      permissionMode: this.permissionMode,
     });
     this.restoreLatestSession();
   }
@@ -144,9 +205,18 @@ export class DesktopSession {
     return this.changedSnapshot();
   }
 
+  public setPermissionMode(mode: FilePermissionMode): DesktopSnapshot {
+    this.permissionMode = mode;
+    this.home.setPermissionMode(mode);
+    return this.changedSnapshot();
+  }
+
   public setModelMode(mode: ShellModelMode & DemoModelMode): DesktopSnapshot {
     this.home.setModelMode(mode);
     this.shell.setModelMode(mode);
+    if (this.switchableModel) {
+      this.switchableModel.setMode(mode);
+    }
     return this.changedSnapshot();
   }
 
@@ -156,6 +226,14 @@ export class DesktopSession {
     this.activeTurnId = submission.turn.id;
     this.shell.bindThread(submission.thread, submission.turn);
     this.shell.navigate('task-plan');
+
+    if (this.permissionMode === 'full-access' || this.permissionMode === 'sandbox-artifacts') {
+      const approval = this.currentApproval();
+      if (approval && approval.status === 'pending') {
+        this.server.respondApproval({ approvalId: approval.id, decision: 'approved' });
+        this.refreshActiveBinding();
+      }
+    }
     return this.changedSnapshot();
   }
 
@@ -208,6 +286,7 @@ export class DesktopSession {
       shell: this.shell.view(),
       home: this.home.view(),
       route: this.shell.view().route,
+      permissionMode: this.permissionMode,
       ...(thread === undefined ? {} : { thread: toThreadView(thread) }),
       ...(turn === undefined ? {} : { turn: toTurnView(turn) }),
       ...(plan === undefined ? {} : { plan: toPlanView(plan, approval) }),

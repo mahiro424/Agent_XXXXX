@@ -3,6 +3,11 @@ import type { Thread, Turn } from '../runtime/protocol.js';
 
 export type DemoHomeState = 'default' | 'empty' | 'disabled' | 'loading';
 export type DemoModelMode = 'fake' | 'live';
+export type FilePermissionMode =
+  | 'full-access'
+  | 'sandbox-artifacts'
+  | 'ask-approval'
+  | 'read-only';
 
 export const DEMO_QUICK_TASKS = [
   '整理会议材料并生成 Word 报告',
@@ -16,6 +21,7 @@ export interface DemoHomeView {
   readonly taskInput: string;
   readonly workspaceRoot?: string;
   readonly modelMode: DemoModelMode;
+  readonly permissionMode: FilePermissionMode;
   readonly quickTasks: typeof DEMO_QUICK_TASKS;
   readonly canSubmit: boolean;
   readonly submitLabel: string;
@@ -32,6 +38,7 @@ export interface DemoHomeOptions {
   readonly server: AppServerContract;
   readonly workspaceId?: string;
   readonly liveModelAvailable?: boolean;
+  readonly permissionMode?: FilePermissionMode;
 }
 
 export class DemoHomeController {
@@ -41,12 +48,14 @@ export class DemoHomeController {
   private taskInput = '';
   private workspaceRoot: string | undefined;
   private modelMode: DemoModelMode = 'fake';
+  private permissionMode: FilePermissionMode;
   private loading = false;
 
   public constructor(options: DemoHomeOptions) {
     this.server = options.server;
     this.workspaceId = options.workspaceId ?? 'desktop-workspace';
     this.liveModelAvailable = options.liveModelAvailable ?? false;
+    this.permissionMode = options.permissionMode ?? 'full-access';
   }
 
   public setTaskInput(input: string): void {
@@ -68,6 +77,10 @@ export class DemoHomeController {
     this.modelMode = mode;
   }
 
+  public setPermissionMode(mode: FilePermissionMode): void {
+    this.permissionMode = mode;
+  }
+
   public view(): DemoHomeView {
     const state = this.computeState();
     const disabledReason = this.disabledReason(state);
@@ -76,6 +89,7 @@ export class DemoHomeController {
       state,
       taskInput: this.taskInput,
       modelMode: this.modelMode,
+      permissionMode: this.permissionMode,
       quickTasks: DEMO_QUICK_TASKS,
       canSubmit: state === 'default',
       submitLabel: state === 'loading' ? '正在生成方案…' : '生成方案',
