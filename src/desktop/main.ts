@@ -116,7 +116,7 @@ function registerIpcHandlers(): void {
 }
 
 function createMainWindow(): BrowserWindow {
-  const preloadPath = fileURLToPath(new URL('./preload.js', import.meta.url));
+  const preloadPath = fileURLToPath(new URL('./preload.cjs', import.meta.url));
   const indexPath = fileURLToPath(new URL('./index.html', import.meta.url));
   const window = new BrowserWindow({
     width: 1280,
@@ -128,6 +128,12 @@ function createMainWindow(): BrowserWindow {
       nodeIntegration: false,
       preload: preloadPath,
     },
+  });
+  window.webContents.on('preload-error', (_event, preloadPath, error) => {
+    console.error(`[PRELOAD ERROR] ${preloadPath}:`, error);
+  });
+  window.webContents.on('console-message', (event) => {
+    console.log(`[RENDERER] ${event.message}`);
   });
   window.on('closed', () => {
     mainWindow = undefined;

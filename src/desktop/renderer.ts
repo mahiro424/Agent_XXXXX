@@ -159,7 +159,18 @@ root.addEventListener('change', (event) => {
   }
 });
 
-void window.agentDesktop.getSnapshot().then(render).catch((error: unknown) => {
-  feedback(error instanceof Error ? error.message : String(error));
-});
-window.agentDesktop.subscribe(render);
+if (typeof window.agentDesktop === 'undefined') {
+  const errMsg = '初始化错误：未检测到桌面桥接层 (window.agentDesktop)';
+  console.error(errMsg);
+  root.innerHTML = `<div style="padding:20px;color:#dc2626;font-weight:bold;">${errMsg}</div>`;
+} else {
+  void window.agentDesktop.getSnapshot().then((initial) => {
+    console.log('[RENDERER] Initial snapshot received:', initial.route);
+    render(initial);
+  }).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('[RENDERER] Failed to get initial snapshot:', message);
+    feedback(message);
+  });
+  window.agentDesktop.subscribe(render);
+}
