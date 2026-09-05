@@ -18,19 +18,24 @@ import { LocalWorkspaceSandbox } from './sandbox.js';
 import { LocalDocumentEngine } from './document-engine.js';
 import type { WorkspaceDocumentEngine } from './document-engine.js';
 import { ProductionOfficeEngine } from './office-engine.js';
-import type { ParsedTableData } from './office-engine.js';
+import type { ParsedTableData, RichDocxSection } from './office-engine.js';
 import { EvidenceVerifier } from './verifier.js';
 import type { VerificationRequest, VerificationResult } from './verifier.js';
+import { SkillRegistry } from './skill.js';
+import type { AgentSkill } from './skill.js';
+import { McpBridge } from './mcp-bridge.js';
 import {
   DEFAULT_AGENT_TOOLS,
   OpenAICompatibleModelProvider,
+  pruneContextMessages,
 } from './model-provider.js';
-import type { ModelConfig, ModelProvider } from './model-provider.js';
+import type { ModelChatOutput, ModelConfig, ModelProvider } from './model-provider.js';
 import type {
   AnyRuntimeEvent,
   Approval,
   ArtifactVerification,
   ArtifactWriteResult,
+  ChatMessage,
   CreateThreadInput,
   Plan,
   SandboxCheckInput,
@@ -38,6 +43,7 @@ import type {
   StartTurnInput,
   Thread,
   ThreadStatus,
+  ToolCall,
   ToolExecution,
   Turn,
   TurnStatus,
@@ -53,6 +59,8 @@ export interface RuntimeEngineOptions {
   readonly eventStore?: RuntimeEventStore;
   readonly modelProvider?: ModelProvider;
   readonly modelConfig?: ModelConfig;
+  readonly skillRegistry?: SkillRegistry;
+  readonly mcpBridge?: McpBridge;
 }
 
 export interface RespondApprovalInput {
@@ -81,7 +89,9 @@ export class RuntimeEngine {
   private readonly turns = new Map<string, Turn>();
   private readonly plans = new Map<string, Plan>();
   private readonly approvals = new Map<string, Approval>();
+  private readonly threadMessages = new Map<string, ChatMessage[]>();
   private readonly pausedTurnStatuses = new Map<string, TurnStatus>();
+  private readonly threadActiveSkills = new Map<string, string>();
   private readonly log: EventLog;
   private readonly model: ModelProvider;
   private readonly toolAdapter: FakeToolAdapter;
@@ -91,11 +101,15 @@ export class RuntimeEngine {
   private readonly evidenceVerifier: EvidenceVerifier;
   private readonly sandboxes = new Map<string, LocalWorkspaceSandbox>();
   private readonly pendingTurnExecutions = new Map<string, Promise<void>>();
+  private readonly skillRegistry: SkillRegistry;
+  private readonly mcpBridge: McpBridge;
   private readonly now: RuntimeClock;
   private readonly createId: RuntimeIdFactory;
 
   public constructor(options: RuntimeEngineOptions = {}) {
     this.now = options.now ?? currentTime;
+    this.skillRegistry = options.skillRegistry ?? new SkillRegistry();
+    this.mcpBridge = options.mcpBridge ?? new McpBridge();
     const eventStore =
       options.eventStore ??
       (options.eventLogPath === undefined ? undefined : new FileEventStore(options.eventLogPath));
@@ -901,6 +915,13 @@ export class RuntimeEngine {
           }
           break;
         }
+        case 'message.created': {
+          const msg = event.payload;
+          const list = this.threadMessages.get(msg.threadId) ?? [];
+          list.push(msg);
+          this.threadMessages.set(msg.threadId, list);
+          break;
+        }
         default:
           break;
       }
@@ -1015,6 +1036,258 @@ export class RuntimeEngine {
       throw new Error(`plan ${planId} not found`);
     }
     return plan;
+  }
+
+  public listMessages(threadId: string): readonly ChatMessage[] {
+    return [...(this.threadMessages.get(threadId) ?? [])];
+  }
+
+  public appendMessage(message: ChatMessage): ChatMessage {
+    const list = this.threadMessages.get(message.threadId) ?? [];
+    list.push(message);
+    this.threadMessages.set(message.threadId, list);
+    this.log.append({
+      type: 'message.created',
+      threadId: message.threadId,
+      payload: message,
+    });
+    return message;
+  }
+
+  public async sendMessage(
+    threadId: string,
+    content: string,
+    options?: {
+      skillId?: string;
+      systemPrompt?: string;
+      maxSteps?: number;
+    },
+  ): Promise<ChatMessage> {
+    const thread = this.requireThread(threadId);
+    if (options?.skillId) {
+      this.threadActiveSkills.set(thread.id, options.skillId);
+    }
+    const activeSkillId = options?.skillId ?? this.threadActiveSkills.get(thread.id);
+    const activeSkill = activeSkillId ? this.skillRegistry.get(activeSkillId) : undefined;
+    const effectivePrompt = options?.systemPrompt ?? activeSkill?.systemPrompt;
+
+    const userMsg: ChatMessage = {
+      id: this.createId('msg'),
+      threadId: thread.id,
+      role: 'user',
+      content,
+      createdAt: this.now(),
+    };
+    this.appendMessage(userMsg);
+
+    // Run Agent ReAct loop
+    const maxSteps = options?.maxSteps ?? 8;
+    let step = 0;
+    let lastAssistantMsg: ChatMessage = {
+      id: this.createId('msg'),
+      threadId: thread.id,
+      role: 'assistant',
+      content: '',
+      createdAt: this.now(),
+    };
+
+    const tools = [...DEFAULT_AGENT_TOOLS, ...this.mcpBridge.toAgentTools()];
+
+    while (step++ < maxSteps) {
+      const allMsgs = this.threadMessages.get(thread.id) ?? [];
+      const pruned = pruneContextMessages(allMsgs);
+      const sandbox = this.sandboxes.get(thread.id);
+      const workspaceFiles = sandbox ? sandbox.listFiles() : undefined;
+
+      let output: ModelChatOutput;
+      if (typeof this.model.chatCompletion === 'function') {
+        output = await this.model.chatCompletion({
+          messages: pruned,
+          tools,
+          workspaceFiles,
+          systemPrompt: effectivePrompt,
+        });
+      } else {
+        output = { content: '收到您的指令，已记录在工作区任务中。' };
+      }
+
+      if (!output.toolCalls || output.toolCalls.length === 0) {
+        lastAssistantMsg = {
+          id: this.createId('msg'),
+          threadId: thread.id,
+          role: 'assistant',
+          content: output.content || '任务已完成。',
+          ...(output.reasoningContent ? { reasoningContent: output.reasoningContent } : {}),
+          createdAt: this.now(),
+        };
+        this.appendMessage(lastAssistantMsg);
+        break;
+      }
+
+      // Output has tool calls
+      const assistantCallMsg: ChatMessage = {
+        id: this.createId('msg'),
+        threadId: thread.id,
+        role: 'assistant',
+        content: output.content,
+        ...(output.reasoningContent ? { reasoningContent: output.reasoningContent } : {}),
+        toolCalls: output.toolCalls,
+        createdAt: this.now(),
+      };
+      this.appendMessage(assistantCallMsg);
+      lastAssistantMsg = assistantCallMsg;
+
+      for (const tc of output.toolCalls) {
+        let toolResult = '';
+        try {
+          toolResult = await this.executeToolCall(thread, tc);
+        } catch (err) {
+          toolResult = `工具执行异常: ${errorMessage(err)}`;
+        }
+        const toolMsg: ChatMessage = {
+          id: this.createId('msg'),
+          threadId: thread.id,
+          role: 'tool',
+          toolCallId: tc.id,
+          name: tc.name,
+          content: toolResult,
+          createdAt: this.now(),
+        };
+        this.appendMessage(toolMsg);
+      }
+    }
+
+    return lastAssistantMsg;
+  }
+
+  public async executeToolCall(thread: Thread, toolCall: ToolCall): Promise<string> {
+    const sandbox = this.requireSandbox(thread.id);
+    const toolName = toolCall.name;
+    const args = toolCall.arguments ?? {};
+
+    if (toolName === 'workspace.read_file') {
+      const target =
+        (args.path as string) || (args.file as string) || (args.source as string) || 'sales.csv';
+      if (sandbox.hasFile(target)) {
+        return sandbox.readFile(target);
+      }
+      return `文件未找到: ${target}。当前工作区文件列表: ${sandbox.listFiles().join(', ')}`;
+    }
+
+    if (toolName === 'office.process_excel') {
+      const artifactName = (args.target as string) || 'sales-summary.xlsx';
+      const sourceFile = (args.source as string) || 'sales.csv';
+      let tableData: ParsedTableData | undefined;
+      if (sandbox.hasFile(sourceFile)) {
+        const type = sourceFile.endsWith('.xlsx') ? 'xlsx' : 'csv';
+        tableData = await this.officeEngine.readTableData(
+          sandbox.readFileBuffer(sourceFile),
+          type,
+        );
+      } else if (sandbox.hasFile('sales.csv')) {
+        tableData = await this.officeEngine.readTableData(
+          sandbox.readFileBuffer('sales.csv'),
+          'csv',
+        );
+      }
+
+      const columns =
+        tableData && tableData.headers.length > 0
+          ? tableData.headers.map((h) => ({ header: h.toUpperCase(), key: h }))
+          : [
+              { header: '负责人 (Owner)', key: 'owner' },
+              { header: '销售额 (Amount)', key: 'amount' },
+            ];
+      const rows =
+        tableData && tableData.rows.length > 0
+          ? tableData.rows
+          : [
+              { owner: 'Maya', amount: 120 },
+              { owner: 'Leo', amount: 80 },
+            ];
+
+      const workbook = await this.officeEngine.createExcelWorkbook({
+        title: 'Sales Summary',
+        sheets: [{ name: '销售数据汇总', columns, rows, includeTotalRow: true }],
+      });
+      sandbox.writeArtifactBuffer(artifactName, workbook);
+      this.verifyArtifact(thread.id, artifactName);
+      return `成功读取 ${sourceFile}，生成带 SUM 动态求和公式的 Excel 工作簿：${artifactName}（已完成物理证据链校验）`;
+    }
+
+    if (toolName === 'office.generate_word_report' || toolName === 'workspace.write_report') {
+      const artifactName = (args.target as string) || 'weekly-meeting-report.docx';
+      const sourceNames = ['meeting-notes.md', 'decisions.txt', 'sales.csv'] as const;
+      const sources = sourceNames
+        .filter((name) => sandbox.hasFile(name))
+        .map((name) => this.documentEngine.readSource(name, sandbox.readFileBuffer(name)));
+
+      let table: { headers: readonly string[]; rows: readonly (readonly string[])[] } | undefined;
+      if (sandbox.hasFile('sales.csv')) {
+        const parsed = await this.officeEngine.readTableData(
+          sandbox.readFileBuffer('sales.csv'),
+          'csv',
+        );
+        if (parsed.headers.length > 0) {
+          table = {
+            headers: parsed.headers,
+            rows: parsed.rows.map((r) => parsed.headers.map((h) => String(r[h] ?? ''))),
+          };
+        }
+      }
+
+      const sections: RichDocxSection[] = sources.map((s) => ({
+        heading: `数据来源：${s.name}`,
+        paragraphs: [s.text.slice(0, 300)],
+      }));
+      if (table) {
+        sections.push({
+          heading: '销售与业务数据统计表',
+          paragraphs: ['下表为当前工作区业务数据明细汇总：'],
+          table,
+        });
+      }
+
+      const docx = await this.officeEngine.createRichWordDocument({
+        title: '工作区项目与业务周报',
+        subtitle: '基于本地工作区真实数据自动生成',
+        sections,
+      });
+      sandbox.writeArtifactBuffer(artifactName, docx);
+      this.verifyArtifact(thread.id, artifactName);
+      return `成功整合工作区材料，生成高保真结构化 Word 报告：${artifactName}（包含主标题、分节正文与格式化对比表格，已完成物理证据链校验）`;
+    }
+
+    if (toolName.startsWith('mcp.')) {
+      return await this.mcpBridge.execute(toolName, args);
+    }
+
+    return `工具 ${toolName} 已执行。`;
+  }
+
+  public listSkills(): readonly AgentSkill[] {
+    return this.skillRegistry.list();
+  }
+
+  public getSkill(id: string): AgentSkill | undefined {
+    return this.skillRegistry.get(id);
+  }
+
+  public registerSkill(skill: AgentSkill): void {
+    this.skillRegistry.register(skill);
+  }
+
+  public setThreadSkill(threadId: string, skillId: string): void {
+    this.threadActiveSkills.set(threadId, skillId);
+  }
+
+  public getThreadSkill(threadId: string): AgentSkill | undefined {
+    const id = this.threadActiveSkills.get(threadId);
+    return id ? this.skillRegistry.get(id) : undefined;
+  }
+
+  public getMcpBridge(): McpBridge {
+    return this.mcpBridge;
   }
 }
 

@@ -6,7 +6,9 @@ import type {
   DesktopTurnView,
 } from '../desktop/session.js';
 import type { AppShellView } from './app-shell.js';
-import type { DemoHomeView } from './demo-home.js';
+import type { DemoHomeView, FilePermissionMode } from './demo-home.js';
+import type { ChatMessage } from '../runtime/protocol.js';
+import type { AgentSkill } from '../runtime/skill.js';
 
 function escapeHtml(value: string): string {
   return value
@@ -130,6 +132,102 @@ export interface DemoHomeRenderContext {
   readonly turn?: DesktopTurnView | undefined;
   readonly plan?: DesktopPlanView | undefined;
   readonly approval?: DesktopApprovalView | undefined;
+  readonly messages?: readonly ChatMessage[] | undefined;
+  readonly skills?: readonly AgentSkill[] | undefined;
+  readonly activeSkillId?: string | undefined;
+  readonly permissionMode?: FilePermissionMode | undefined;
+}
+
+function formatMarkdown(text: string): string {
+  if (!text) return '';
+  const escaped = escapeHtml(text);
+  return escaped
+    .replace(/```([\w-]*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+    .replace(/\n\n/g, '<br><br>')
+    .replace(/\n- /g, '<br>• ')
+    .replace(/\n(\d+)\. /g, '<br>$1. ')
+    .replace(/\n/g, '<br>');
+}
+
+function renderMessageList(messages: readonly ChatMessage[]): string {
+  return messages
+    .filter((m) => m.role !== 'system')
+    .map((msg) => {
+      const timeStr = msg.createdAt ? msg.createdAt.slice(11, 19) : '';
+      if (msg.role === 'user') {
+        return `
+          <div class="chat-message user" data-msg-id="${escapeHtml(msg.id)}">
+            <div class="chat-bubble user-bubble">
+              <div class="chat-text">${escapeHtml(msg.content)}</div>
+              <div class="chat-timestamp">${escapeHtml(timeStr)}</div>
+            </div>
+            <div class="chat-avatar user-avatar">👤</div>
+          </div>
+        `;
+      }
+
+      if (msg.role === 'tool') {
+        return `
+          <div class="chat-message tool" data-msg-id="${escapeHtml(msg.id)}">
+            <div class="chat-tool-result-box">
+              <div class="tool-result-header">
+                <span class="tool-result-icon">⚡</span>
+                <span class="tool-result-title">工具执行回填：<code>${escapeHtml(msg.name ?? 'tool')}</code></span>
+                <span class="tool-verified-tag">✓ 物理已核验</span>
+              </div>
+              <div class="tool-result-body">${escapeHtml(msg.content)}</div>
+            </div>
+          </div>
+        `;
+      }
+
+      // Assistant message
+      let toolCallsHtml = '';
+      if (msg.toolCalls && msg.toolCalls.length > 0) {
+        toolCallsHtml = msg.toolCalls
+          .map(
+            (tc) => `
+              <div class="chat-tool-call-box">
+                <div class="tool-call-header">
+                  <span class="tool-icon">🔧</span>
+                  <span class="tool-name">Agent 调度工具：<code>${escapeHtml(tc.name)}</code></span>
+                  <span class="tool-call-badge">ReAct Loop</span>
+                </div>
+                <div class="tool-args-preview">入参：<code>${escapeHtml(JSON.stringify(tc.arguments))}</code></div>
+              </div>
+            `,
+          )
+          .join('');
+      }
+
+      let reasoningHtml = '';
+      if (msg.reasoningContent) {
+        reasoningHtml = `
+          <details class="chat-thinking-box" open>
+            <summary class="thinking-summary">🧠 深度思考过程 (DeepSeek Reasoning)</summary>
+            <div class="thinking-body">${formatMarkdown(msg.reasoningContent)}</div>
+          </details>
+        `;
+      }
+
+      const formatted = formatMarkdown(msg.content);
+
+      return `
+        <div class="chat-message assistant" data-msg-id="${escapeHtml(msg.id)}">
+          <div class="chat-avatar assistant-avatar">🤖</div>
+          <div class="chat-bubble assistant-bubble">
+            ${reasoningHtml}
+            ${toolCallsHtml}
+            ${formatted ? `<div class="chat-text markdown-body">${formatted}</div>` : ''}
+            <div class="chat-timestamp">${escapeHtml(timeStr)}</div>
+          </div>
+        </div>
+      `;
+    })
+    .join('');
 }
 
 export function renderDemoHome(
@@ -171,6 +269,20 @@ export function renderDemoHome(
       </select>
       <span class="chip-arrow">▾</span>
     </div>`;
+
+  const activeSkill =
+    context?.skills?.find((s) => s.id === context?.activeSkillId) ??
+    context?.skills?.[0] ?? {
+      id: 'data-analysis',
+      name: 'Office-自动合并多表与公式汇总',
+      icon: '🔗',
+      description: '自动合并多表与公式汇总',
+      systemPrompt: '',
+      recommendedTools: [],
+    };
+
+  const skillBadgeLabel = `${activeSkill.icon} ${activeSkill.name}`;
+  const hasMessages = Boolean(context?.messages && context.messages.length > 0);
 
   let inlineExecutionSection = '';
   if (context?.approval && context.approval.status === 'pending') {
@@ -219,6 +331,68 @@ export function renderDemoHome(
       </div>`;
   }
 
+  // If conversation has messages, render chat stream view with bottom docked card
+  if (hasMessages) {
+    return `<main data-page="demo-home" data-state="${view.state}" class="surface-base conversation-page">
+  <section class="conversation-view" aria-label="智能体会话交互">
+    <div class="chat-header-bar">
+      <div class="chat-header-left">
+        <span class="chat-header-icon">${activeSkill.icon}</span>
+        <span class="chat-header-title">${escapeHtml(activeSkill.name)}</span>
+        <span class="chat-header-badge">${view.modelMode === 'live' ? '⚡ DeepSeek V4 Flash' : '🧪 Fake Demo'}</span>
+      </div>
+      <div class="chat-header-right">
+        <button type="button" class="btn-new-conversation" data-action="new-chat" title="重置并开启新对话">＋ 新会话</button>
+      </div>
+    </div>
+
+    <div class="chat-messages-stream" id="chat-stream">
+      ${renderMessageList(context?.messages ?? [])}
+    </div>
+
+    <div class="docked-prompt-area">
+      <div class="main-prompt-card docked">
+        <div class="prompt-active-badge">
+          <span class="skill-badge-pill">
+            <span>${escapeHtml(skillBadgeLabel)}</span>
+            <button type="button" class="badge-remove-btn" title="清除标签">×</button>
+          </span>
+        </div>
+
+        <label for="task-input" class="sr-only">任务输入</label>
+        <textarea id="task-input" name="task" aria-label="任务输入" placeholder="继续输入指令，例如：读取 sales.csv 并生成带 SUM 公式的 Excel 汇总...">${escapeHtml(view.taskInput)}</textarea>
+
+        <div class="prompt-card-bottom">
+          <div class="controls-left">
+            <button type="button" class="btn-card-plus" data-action="select-workspace" title="添加工作区或附件文件">+</button>
+          </div>
+
+          <div class="controls-right">
+            <div class="model-select-wrap">
+              <span class="model-add-icon">+</span>
+              <label for="model-mode" class="sr-only">模型选择</label>
+              <select id="model-mode" data-action="set-model-mode" aria-label="模型选择" class="model-select-chip">
+                <option value="live" ${view.modelMode === 'live' ? 'selected' : ''}>⚡ DeepSeek V4 Flash (极速智能)</option>
+                <option value="fake" ${view.modelMode === 'fake' ? 'selected' : ''}>🧪 Fake Model Demo (离线极速)</option>
+              </select>
+            </div>
+            <button type="button" class="submit-circle-btn" data-action="submit-plan" ${view.canSubmit ? '' : 'disabled'} title="${escapeHtml(view.submitLabel)}">
+              ↑
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="prompt-bottom-bar">
+        ${workspacePill}
+        ${permissionSelect}
+      </div>
+    </div>
+  </section>
+</main>`;
+  }
+
+  // Initial Landing State
   return `<main data-page="demo-home" data-state="${view.state}" class="surface-base">
   <section class="welcome" aria-labelledby="demo-home-title">
     <div class="hero-box">
@@ -239,7 +413,7 @@ export function renderDemoHome(
     <div class="main-prompt-card">
       <div class="prompt-active-badge">
         <span class="skill-badge-pill">
-          <span>🔗 Office-自动合并多表与公式汇总</span>
+          <span>${escapeHtml(skillBadgeLabel)}</span>
           <button type="button" class="badge-remove-btn" title="清除标签">×</button>
         </span>
       </div>
@@ -257,7 +431,7 @@ export function renderDemoHome(
             <span class="model-add-icon">+</span>
             <label for="model-mode" class="sr-only">模型选择</label>
             <select id="model-mode" data-action="set-model-mode" aria-label="模型选择" class="model-select-chip">
-              <option value="live" ${view.modelMode === 'live' ? 'selected' : ''}>⚡ 智能模型 (DeepSeek-V3)</option>
+              <option value="live" ${view.modelMode === 'live' ? 'selected' : ''}>⚡ DeepSeek V4 Flash (极速智能)</option>
               <option value="fake" ${view.modelMode === 'fake' ? 'selected' : ''}>🧪 Fake Model Demo (离线极速)</option>
             </select>
           </div>

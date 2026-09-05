@@ -5,6 +5,7 @@ import type {
   AnyRuntimeEvent,
   Approval,
   ArtifactWriteResult,
+  ChatMessage,
   CreateThreadInput,
   SandboxCheckInput,
   SandboxDecision,
@@ -12,11 +13,28 @@ import type {
   Thread,
   Turn,
 } from './protocol.js';
+import type { AgentSkill } from './skill.js';
+import type { McpBridge } from './mcp-bridge.js';
 
 export interface AppServerContract {
   createThread(input: CreateThreadInput): Thread;
   startTurn(input: StartTurnInput): Turn;
   startTurnAsync?(input: StartTurnInput): Promise<Turn>;
+  sendMessage(
+    threadId: string,
+    content: string,
+    options?: {
+      skillId?: string;
+      systemPrompt?: string;
+      maxSteps?: number;
+    },
+  ): Promise<ChatMessage>;
+  listMessages(threadId: string): readonly ChatMessage[];
+  listSkills(): readonly AgentSkill[];
+  getSkill(id: string): AgentSkill | undefined;
+  setThreadSkill(threadId: string, skillId: string): void;
+  getThreadSkill(threadId: string): AgentSkill | undefined;
+  getMcpBridge(): McpBridge;
   respondApproval(input: RespondApprovalInput): Approval;
   pause(threadId: string): void;
   resumeThread(threadId: string): void;
@@ -60,6 +78,42 @@ export class AppServer implements AppServerContract {
 
   public async startTurnAsync(input: StartTurnInput): Promise<Turn> {
     return this.runtime.startTurnAsync(input);
+  }
+
+  public async sendMessage(
+    threadId: string,
+    content: string,
+    options?: {
+      skillId?: string;
+      systemPrompt?: string;
+      maxSteps?: number;
+    },
+  ): Promise<ChatMessage> {
+    return this.runtime.sendMessage(threadId, content, options);
+  }
+
+  public listMessages(threadId: string): readonly ChatMessage[] {
+    return this.runtime.listMessages(threadId);
+  }
+
+  public listSkills(): readonly AgentSkill[] {
+    return this.runtime.listSkills();
+  }
+
+  public getSkill(id: string): AgentSkill | undefined {
+    return this.runtime.getSkill(id);
+  }
+
+  public setThreadSkill(threadId: string, skillId: string): void {
+    this.runtime.setThreadSkill(threadId, skillId);
+  }
+
+  public getThreadSkill(threadId: string): AgentSkill | undefined {
+    return this.runtime.getThreadSkill(threadId);
+  }
+
+  public getMcpBridge(): McpBridge {
+    return this.runtime.getMcpBridge();
   }
 
   public respondApproval(input: RespondApprovalInput): Approval {

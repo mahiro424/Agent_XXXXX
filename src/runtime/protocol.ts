@@ -136,6 +136,26 @@ export interface ArtifactVerification {
   readonly error?: string;
 }
 
+export type MessageRole = 'system' | 'user' | 'assistant' | 'tool';
+
+export interface ToolCall {
+  readonly id: string;
+  readonly name: string;
+  readonly arguments: Record<string, unknown>;
+}
+
+export interface ChatMessage {
+  readonly id: string;
+  readonly threadId: string;
+  readonly role: MessageRole;
+  readonly content: string;
+  readonly reasoningContent?: string;
+  readonly toolCalls?: readonly ToolCall[];
+  readonly toolCallId?: string;
+  readonly name?: string;
+  readonly createdAt: string;
+}
+
 export type RuntimeEventType =
   | 'thread.created'
   | 'thread.status_changed'
@@ -152,7 +172,9 @@ export type RuntimeEventType =
   | 'artifact.verified'
   | 'artifact.verification_failed'
   | 'artifact.reconciliation_required'
-  | 'sandbox.decision';
+  | 'sandbox.decision'
+  | 'message.created'
+  | 'message.updated';
 
 export interface RuntimeEventPayloadMap {
   'thread.created': Thread;
@@ -171,6 +193,8 @@ export interface RuntimeEventPayloadMap {
   'artifact.verification_failed': ArtifactVerification;
   'artifact.reconciliation_required': ArtifactVerification;
   'sandbox.decision': SandboxDecision;
+  'message.created': ChatMessage;
+  'message.updated': ChatMessage;
 }
 
 export interface RuntimeEvent<T extends RuntimeEventType = RuntimeEventType> {

@@ -128,6 +128,25 @@ function registerIpcHandlers(): void {
     sendState();
     return snapshot;
   });
+  ipcMain.handle('desktop:set-skill', async (_event, skillId: unknown) => {
+    if (typeof skillId !== 'string') {
+      throw new TypeError('skillId must be a string');
+    }
+    const snapshot = await requireSession().setSkill(skillId);
+    sendState();
+    return snapshot;
+  });
+  ipcMain.handle(
+    'desktop:send-message',
+    async (_event, input: unknown, options?: { skillId?: string }) => {
+      if (typeof input !== 'string') {
+        throw new TypeError('message input must be a string');
+      }
+      const snapshot = await requireSession().sendMessage(input, options);
+      sendState();
+      return snapshot;
+    },
+  );
   ipcMain.handle('desktop:stop-task', () => {
     const snapshot = requireSession().stopTask();
     sendState();

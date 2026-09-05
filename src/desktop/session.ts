@@ -2,21 +2,35 @@ import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { AppServer } from '../runtime/app-server.js';
 import type { AppServerContract } from '../runtime/app-server.js';
-import type { AnyRuntimeEvent, Approval, Plan, Thread, Turn } from '../runtime/protocol.js';
+import type {
+  AnyRuntimeEvent,
+  Approval,
+  ChatMessage,
+  Plan,
+  Thread,
+  Turn,
+} from '../runtime/protocol.js';
+import type { AgentSkill } from '../runtime/skill.js';
 import { AppShellController } from '../ui/app-shell.js';
 import type { AppRoute, AppShellView, ShellModelMode } from '../ui/app-shell.js';
 import { DemoHomeController } from '../ui/demo-home.js';
 import type { DemoHomeView, DemoModelMode, FilePermissionMode } from '../ui/demo-home.js';
 import { FakeModel } from '../runtime/fake-adapters.js';
 import { OpenAICompatibleModelProvider } from '../runtime/model-provider.js';
-import type { ModelConfig, ModelPlanInput, ModelProvider } from '../runtime/model-provider.js';
+import type {
+  ModelChatInput,
+  ModelChatOutput,
+  ModelConfig,
+  ModelPlanInput,
+  ModelProvider,
+} from '../runtime/model-provider.js';
 import type { RuntimeIdFactory } from '../runtime/event-log.js';
 
 export const BUILTIN_DEEPSEEK_CONFIG: ModelConfig = {
   provider: 'openai-compatible',
   apiKey: 'sk-34f8e866cc4741d4aa77a5d8a2ce3942',
-  baseURL: 'https://api.deepseek.com/v1',
-  modelName: 'deepseek-chat',
+  baseURL: 'https://api.deepseek.com',
+  modelName: 'deepseek-v4-flash',
 };
 
 export class SwitchableModelProvider implements ModelProvider {
@@ -39,6 +53,10 @@ export class SwitchableModelProvider implements ModelProvider {
     return this.mode;
   }
 
+  public setModelName(modelName: string): void {
+    (this.liveModel.config as { modelName: string }).modelName = modelName;
+  }
+
   public async proposePlan(input: ModelPlanInput): Promise<Plan> {
     if (this.mode === 'fake') {
       return this.fakeModel.proposePlan(input);
@@ -48,6 +66,18 @@ export class SwitchableModelProvider implements ModelProvider {
     } catch (err) {
       console.warn('Live DeepSeek API call failed, falling back to smart plan:', err);
       return this.fakeModel.proposePlan(input);
+    }
+  }
+
+  public async chatCompletion(input: ModelChatInput): Promise<ModelChatOutput> {
+    if (this.mode === 'fake') {
+      return this.fakeModel.chatCompletion(input);
+    }
+    try {
+      return await this.liveModel.chatCompletion(input);
+    } catch (err) {
+      console.error('Live DeepSeek API chatCompletion error:', err);
+      return this.fakeModel.chatCompletion(input);
     }
   }
 }
@@ -117,6 +147,9 @@ export interface DesktopSnapshot {
   readonly events: readonly DesktopEventDto[];
   readonly workspaceFiles?: readonly string[];
   readonly artifactFiles?: readonly string[];
+  readonly messages?: readonly ChatMessage[];
+  readonly skills?: readonly AgentSkill[];
+  readonly activeSkillId?: string;
 }
 
 export type DesktopApprovalDecision = 'approved' | 'rejected';
@@ -124,12 +157,14 @@ export type DesktopApprovalDecision = 'approved' | 'rejected';
 export interface DesktopApi {
   getSnapshot(): Promise<DesktopSnapshot>;
   subscribe(listener: (snapshot: DesktopSnapshot) => void): () => void;
-  selectWorkspace(): Promise<DesktopSnapshot>;
+  selectWorkspace(workspaceRoot?: string): Promise<DesktopSnapshot>;
   setTaskInput(input: string): Promise<DesktopSnapshot>;
   chooseQuickTask(task: string): Promise<DesktopSnapshot>;
   navigate(route: AppRoute): Promise<DesktopSnapshot>;
   setModelMode(mode: ShellModelMode & DemoModelMode): Promise<DesktopSnapshot>;
   setPermissionMode(mode: FilePermissionMode): Promise<DesktopSnapshot>;
+  setSkill(skillId: string): Promise<DesktopSnapshot>;
+  sendMessage(input: string, options?: { skillId?: string }): Promise<DesktopSnapshot>;
   submitPlan(): Promise<DesktopSnapshot>;
   respondApproval(decision: DesktopApprovalDecision): Promise<DesktopSnapshot>;
   stopTask(): Promise<DesktopSnapshot>;
@@ -184,9 +219,45 @@ export class DesktopSession {
     this.restoreLatestSession();
   }
 
-  public selectWorkspace(workspaceRoot: string): DesktopSnapshot {
-    this.home.selectWorkspace(workspaceRoot);
-    this.shell.selectWorkspace(workspaceRoot);
+  public selectWorkspace(workspaceRoot?: string): DesktopSnapshot {
+    const target = workspaceRoot ?? this.shell.view().workspaceRoot ?? 'e:\\Agent\\workspace';
+    this.home.selectWorkspace(target);
+    this.shell.selectWorkspace(target);
+    return this.changedSnapshot();
+  }
+
+  public async setSkill(skillId: string): Promise<DesktopSnapshot> {
+    if (this.activeThreadId) {
+      this.server.setThreadSkill(this.activeThreadId, skillId);
+    }
+    return this.changedSnapshot();
+  }
+
+  public async sendMessage(
+    input: string,
+    options?: { skillId?: string },
+  ): Promise<DesktopSnapshot> {
+    const text = input.trim();
+    if (!text) {
+      return this.snapshot();
+    }
+
+    if (!this.activeThreadId) {
+      const workspaceRoot = this.shell.view().workspaceRoot ?? 'e:\\Agent\\workspace';
+      const thread = this.server.createThread({
+        workspaceId: 'desktop-workspace',
+        workspaceRoot,
+      });
+      this.activeThreadId = thread.id;
+      this.shell.bindThread(thread, undefined);
+    }
+
+    if (options?.skillId) {
+      this.server.setThreadSkill(this.activeThreadId, options.skillId);
+    }
+
+    await this.server.sendMessage(this.activeThreadId, text, options);
+    this.home.setTaskInput('');
     return this.changedSnapshot();
   }
 
@@ -282,6 +353,12 @@ export class DesktopSession {
       }
     }
 
+    const messages = this.activeThreadId ? this.server.listMessages(this.activeThreadId) : [];
+    const skills = this.server.listSkills();
+    const activeSkillId = this.activeThreadId
+      ? this.server.getThreadSkill(this.activeThreadId)?.id ?? 'general-assistant'
+      : 'general-assistant';
+
     return {
       shell: this.shell.view(),
       home: this.home.view(),
@@ -294,6 +371,9 @@ export class DesktopSession {
       events: events.map(toEventDto),
       ...(workspaceFiles === undefined ? {} : { workspaceFiles }),
       ...(artifactFiles === undefined ? {} : { artifactFiles }),
+      messages,
+      skills,
+      activeSkillId,
     };
   }
 

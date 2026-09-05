@@ -55,7 +55,9 @@ export class LocalWorkspaceSandbox {
 
   public constructor(options: LocalWorkspaceSandboxOptions) {
     this.rootDir = resolve(options.rootDir);
-    if (!existsSync(this.rootDir) || !statSync(this.rootDir).isDirectory()) {
+    if (!existsSync(this.rootDir)) {
+      mkdirSync(this.rootDir, { recursive: true });
+    } else if (!statSync(this.rootDir).isDirectory()) {
       throw new Error(`workspace root is not a directory: ${this.rootDir}`);
     }
     this.realRootDir = realpathSync(this.rootDir);

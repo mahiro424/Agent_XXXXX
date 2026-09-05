@@ -17,7 +17,8 @@ const api: DesktopApi = {
     ipcRenderer.on(stateChangedChannel, handler);
     return () => ipcRenderer.removeListener(stateChangedChannel, handler);
   },
-  selectWorkspace: () => ipcRenderer.invoke('desktop:select-workspace') as Promise<DesktopSnapshot>,
+  selectWorkspace: (workspaceRoot?: string) =>
+    ipcRenderer.invoke('desktop:select-workspace', workspaceRoot) as Promise<DesktopSnapshot>,
   setTaskInput: (input) =>
     ipcRenderer.invoke('desktop:set-task-input', input) as Promise<DesktopSnapshot>,
   chooseQuickTask: (task) =>
@@ -28,6 +29,10 @@ const api: DesktopApi = {
     ipcRenderer.invoke('desktop:set-model-mode', mode) as Promise<DesktopSnapshot>,
   setPermissionMode: (mode) =>
     ipcRenderer.invoke('desktop:set-permission-mode', mode) as Promise<DesktopSnapshot>,
+  setSkill: (skillId: string) =>
+    ipcRenderer.invoke('desktop:set-skill', skillId) as Promise<DesktopSnapshot>,
+  sendMessage: (input: string, options?: { skillId?: string }) =>
+    ipcRenderer.invoke('desktop:send-message', input, options) as Promise<DesktopSnapshot>,
   submitPlan: () => ipcRenderer.invoke('desktop:submit-plan') as Promise<DesktopSnapshot>,
   respondApproval: (decision: DesktopApprovalDecision) =>
     ipcRenderer.invoke('desktop:respond-approval', decision) as Promise<DesktopSnapshot>,

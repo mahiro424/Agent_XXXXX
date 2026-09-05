@@ -31,6 +31,10 @@ function render(next: DesktopSnapshot): void {
     turn: next.turn,
     plan: next.plan,
     approval: next.approval,
+    messages: next.messages,
+    skills: next.skills,
+    activeSkillId: next.activeSkillId,
+    permissionMode: next.permissionMode,
   });
   root.innerHTML = `<div class="desktop-shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}">
   ${renderAppShell(next.shell, {
@@ -40,6 +44,11 @@ function render(next: DesktopSnapshot): void {
   <section data-desktop-content>${routeContent}</section>
   <p id="desktop-feedback" role="status" aria-live="polite"></p>
 </div>`;
+
+  const stream = document.querySelector<HTMLElement>('#chat-stream');
+  if (stream) {
+    stream.scrollTop = stream.scrollHeight;
+  }
 }
 
 function feedback(message: string): void {
@@ -112,9 +121,22 @@ root.addEventListener('click', (event) => {
       case 'select-workspace':
         void apply(() => window.agentDesktop.selectWorkspace(), '工作区已选择');
         return;
-      case 'submit-plan':
-        void apply(() => window.agentDesktop.submitPlan(), '方案已生成，请审核后决定是否执行');
+      case 'new-chat':
+        void apply(() => window.agentDesktop.selectWorkspace(), '已开启新对话');
         return;
+      case 'send-message':
+      case 'submit-plan': {
+        const input = snapshot?.home.taskInput?.trim();
+        if (input) {
+          void apply(
+            () => window.agentDesktop.sendMessage(input),
+            '智能体正在思考并执行任务…',
+          );
+        } else {
+          void apply(() => window.agentDesktop.submitPlan(), '方案已生成，请审核后决定是否执行');
+        }
+        return;
+      }
       case 'approve-plan':
         void apply(() => window.agentDesktop.respondApproval('approved'), '已批准执行');
         return;
@@ -145,13 +167,22 @@ root.addEventListener('click', (event) => {
 root.addEventListener('keydown', (event) => {
   if (
     event.target instanceof HTMLTextAreaElement &&
-    event.target.id === 'task-input' &&
-    (event.ctrlKey || event.metaKey) &&
-    event.key === 'Enter'
+    event.target.id === 'task-input'
   ) {
-    event.preventDefault();
-    if (snapshot?.home.canSubmit) {
-      void apply(() => window.agentDesktop.submitPlan(), '方案已生成，请审核后决定是否执行');
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      const input = event.target.value.trim();
+      if (input) {
+        void apply(
+          () => window.agentDesktop.sendMessage(input),
+          '智能体正在思考并执行任务…',
+        );
+      }
+    } else if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+      event.preventDefault();
+      if (snapshot?.home.canSubmit) {
+        void apply(() => window.agentDesktop.submitPlan(), '方案已生成，请审核后决定是否执行');
+      }
     }
   }
 });

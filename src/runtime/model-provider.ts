@@ -1,5 +1,5 @@
 import type { RuntimeIdFactory } from './event-log.js';
-import type { Plan, PlanStep } from './protocol.js';
+import type { ChatMessage, Plan, PlanStep, ToolCall } from './protocol.js';
 
 export interface ToolParameterSchema {
   readonly type: string;
@@ -23,6 +23,19 @@ export interface ModelPlanInput {
   readonly tools?: readonly AgentToolDefinition[];
 }
 
+export interface ModelChatInput {
+  readonly messages: readonly ChatMessage[];
+  readonly tools?: readonly AgentToolDefinition[];
+  readonly workspaceFiles?: readonly string[] | undefined;
+  readonly systemPrompt?: string | undefined;
+}
+
+export interface ModelChatOutput {
+  readonly content: string;
+  readonly reasoningContent?: string;
+  readonly toolCalls?: readonly ToolCall[];
+}
+
 export interface ModelConfig {
   readonly provider?: 'fake' | 'openai-compatible';
   readonly apiKey?: string;
@@ -34,6 +47,60 @@ export interface ModelConfig {
 
 export interface ModelProvider {
   proposePlan(input: ModelPlanInput): Promise<Plan> | Plan;
+  chatCompletion?(input: ModelChatInput): Promise<ModelChatOutput> | ModelChatOutput;
+}
+
+export function estimateMessageTokens(messages: readonly ChatMessage[]): number {
+  return Math.ceil(JSON.stringify(messages).length / 4);
+}
+
+export function pruneContextMessages(
+  messages: readonly ChatMessage[],
+  maxEstimatedTokens = 8000,
+): ChatMessage[] {
+  if (estimateMessageTokens(messages) <= maxEstimatedTokens) {
+    return [...messages];
+  }
+
+  const result: ChatMessage[] = [];
+  const systemMsg = messages.find((m) => m.role === 'system');
+  if (systemMsg) {
+    result.push(systemMsg);
+  }
+
+  const nonSystem = messages.filter((m) => m.role !== 'system');
+  const lastMsg = nonSystem[nonSystem.length - 1];
+  const prior = nonSystem.slice(0, nonSystem.length - 1);
+
+  for (const msg of prior) {
+    if (msg.role === 'tool' && msg.content.length > 300) {
+      result.push({
+        ...msg,
+        content:
+          msg.content.slice(0, 150) +
+          '\n... [Tool output truncated: 上下文已压缩] ...\n' +
+          msg.content.slice(-100),
+      });
+    } else {
+      result.push(msg);
+    }
+  }
+
+  if (lastMsg) {
+    if (lastMsg.role === 'tool' && lastMsg.content.length > 2000) {
+      result.push({
+        ...lastMsg,
+        content:
+          lastMsg.content.slice(0, 1000) +
+          '\n... [Tool output truncated: 最近输出超出限额] ...\n' +
+          lastMsg.content.slice(-500),
+      });
+    } else {
+      result.push(lastMsg);
+    }
+  }
+
+  return result;
 }
 
 export const DEFAULT_AGENT_TOOLS: readonly AgentToolDefinition[] = [
@@ -88,7 +155,7 @@ export function resolveModelConfig(config: ModelConfig = {}): Required<ModelConf
   const modelName =
     config.modelName ??
     process.env.AGENT_MODEL_NAME ??
-    (baseURL.includes('deepseek') ? 'deepseek-chat' : 'gpt-4o-mini');
+    (baseURL.includes('deepseek') ? 'deepseek-v4-flash' : 'gpt-4o-mini');
   const temperature = config.temperature ?? 0.2;
   const timeoutMs = config.timeoutMs ?? 30000;
 
@@ -149,7 +216,8 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
       response_format: { type: 'json_object' },
     };
 
-    const url = `${this.config.baseURL}/chat/completions`;
+    const base = this.config.baseURL.replace(/\/+$/, '');
+    const url = base.endsWith('/chat/completions') ? base : `${base}/chat/completions`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs);
 
@@ -285,6 +353,142 @@ ${fileSection}
       steps,
       status: 'proposed',
     };
+  }
+
+  public async chatCompletion(input: ModelChatInput): Promise<ModelChatOutput> {
+    if (!this.config.apiKey) {
+      throw new Error(
+        'OpenAI-compatible model provider requires an API key (set AGENT_API_KEY or configure apiKey)',
+      );
+    }
+
+    const tools = input.tools ?? DEFAULT_AGENT_TOOLS;
+    const defaultSys = this.buildSystemPrompt(tools, input.workspaceFiles);
+    const systemPrompt = input.systemPrompt ?? defaultSys;
+
+    const formattedMessages = [
+      { role: 'system', content: systemPrompt },
+      ...input.messages.map((m) => {
+        if (m.role === 'tool') {
+          return {
+            role: 'tool',
+            tool_call_id: m.toolCallId ?? 'call_default',
+            content: m.content,
+          };
+        }
+        if (m.role === 'assistant') {
+          const assistantMsg: Record<string, unknown> = {
+            role: 'assistant',
+            content: m.content || '',
+          };
+          if (m.reasoningContent) {
+            assistantMsg.reasoning_content = m.reasoningContent;
+          }
+          if (m.toolCalls && m.toolCalls.length > 0) {
+            assistantMsg.tool_calls = m.toolCalls.map((tc) => ({
+              id: tc.id,
+              type: 'function',
+              function: {
+                name: tc.name.replace(/\./g, '_'),
+                arguments: JSON.stringify(tc.arguments),
+              },
+            }));
+          }
+          return assistantMsg;
+        }
+        return { role: m.role, content: m.content };
+      }),
+    ];
+
+    const formattedTools = tools.map((t) => ({
+      type: 'function' as const,
+      function: {
+        name: t.name.replace(/\./g, '_'),
+        description: t.description,
+        parameters: t.parameters ?? {
+          type: 'object',
+          properties: {},
+        },
+      },
+    }));
+
+    const requestBody: Record<string, unknown> = {
+      model: this.config.modelName,
+      messages: formattedMessages,
+      temperature: this.config.temperature,
+    };
+    if (formattedTools.length > 0) {
+      requestBody.tools = formattedTools;
+    }
+
+    const base = this.config.baseURL.replace(/\/+$/, '');
+    const url = base.endsWith('/chat/completions') ? base : `${base}/chat/completions`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs);
+
+    try {
+      const response = await this.fetchImpl(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.config.apiKey}`,
+        },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => '');
+        throw new Error(`Model API request failed with status ${response.status}: ${errorText}`);
+      }
+
+      const data = (await response.json()) as {
+        choices?: Array<{
+          message?: {
+            content?: string | null;
+            reasoning_content?: string | null;
+            tool_calls?: Array<{
+              id: string;
+              type: string;
+              function: { name: string; arguments: string };
+            }>;
+          };
+        }>;
+      };
+
+      const choice = data.choices?.[0]?.message;
+      if (!choice) {
+        return { content: '大模型未返回响应内容。' };
+      }
+
+      const toolCalls: ToolCall[] = [];
+      if (choice.tool_calls && choice.tool_calls.length > 0) {
+        for (const tc of choice.tool_calls) {
+          let parsedArgs: Record<string, unknown> = {};
+          try {
+            parsedArgs = JSON.parse(tc.function.arguments);
+          } catch {
+            parsedArgs = { raw: tc.function.arguments };
+          }
+          const originalName = tc.function.name.includes('_')
+            ? tc.function.name.replace(/_/, '.')
+            : tc.function.name;
+          toolCalls.push({
+            id: tc.id,
+            name: originalName,
+            arguments: parsedArgs,
+          });
+        }
+      }
+
+      return {
+        content: choice.content ?? '',
+        ...(choice.reasoning_content ? { reasoningContent: choice.reasoning_content } : {}),
+        ...(toolCalls.length > 0 ? { toolCalls } : {}),
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 }
 
