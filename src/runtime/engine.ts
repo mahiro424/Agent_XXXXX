@@ -17,6 +17,8 @@ import {
 import { LocalWorkspaceSandbox } from './sandbox.js';
 import { LocalDocumentEngine } from './document-engine.js';
 import type { WorkspaceDocumentEngine } from './document-engine.js';
+import { ProductionOfficeEngine } from './office-engine.js';
+import type { ParsedTableData } from './office-engine.js';
 import { EvidenceVerifier } from './verifier.js';
 import type { VerificationRequest, VerificationResult } from './verifier.js';
 import {
@@ -46,6 +48,7 @@ export interface RuntimeEngineOptions {
   readonly now?: RuntimeClock;
   readonly idFactory?: RuntimeIdFactory;
   readonly documentEngine?: WorkspaceDocumentEngine;
+  readonly officeEngine?: ProductionOfficeEngine;
   readonly eventLogPath?: string;
   readonly eventStore?: RuntimeEventStore;
   readonly modelProvider?: ModelProvider;
@@ -84,8 +87,10 @@ export class RuntimeEngine {
   private readonly toolAdapter: FakeToolAdapter;
   private readonly verifier: FakeVerifier;
   private readonly documentEngine: WorkspaceDocumentEngine;
+  private readonly officeEngine: ProductionOfficeEngine;
   private readonly evidenceVerifier: EvidenceVerifier;
   private readonly sandboxes = new Map<string, LocalWorkspaceSandbox>();
+  private readonly pendingTurnExecutions = new Map<string, Promise<void>>();
   private readonly now: RuntimeClock;
   private readonly createId: RuntimeIdFactory;
 
@@ -115,6 +120,7 @@ export class RuntimeEngine {
     this.toolAdapter = new FakeToolAdapter(options.scenario, this.createId);
     this.verifier = new FakeVerifier(options.scenario, this.createId);
     this.documentEngine = options.documentEngine ?? new LocalDocumentEngine();
+    this.officeEngine = options.officeEngine ?? new ProductionOfficeEngine();
     this.evidenceVerifier = new EvidenceVerifier({
       now: this.now,
       idFactory: this.createId,
@@ -319,6 +325,40 @@ export class RuntimeEngine {
     return resolved;
   }
 
+  public async respondApprovalAsync(input: RespondApprovalInput): Promise<Approval> {
+    const approval = this.respondApproval(input);
+    if (input.decision === 'rejected') {
+      return approval;
+    }
+    const turn = this.requireTurn(approval.turnId);
+    const pending = this.pendingTurnExecutions.get(turn.id);
+    if (pending) {
+      await pending;
+    }
+    return approval;
+  }
+
+  public async waitForTurnCompletion(turnId: string, timeoutMs = 5000): Promise<Turn> {
+    const turn = this.requireTurn(turnId);
+    if (terminalTurnStatuses.includes(turn.status)) {
+      return turn;
+    }
+    const pending = this.pendingTurnExecutions.get(turnId);
+    if (pending) {
+      await pending;
+      return this.requireTurn(turnId);
+    }
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const current = this.requireTurn(turnId);
+      if (terminalTurnStatuses.includes(current.status)) {
+        return current;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return this.requireTurn(turnId);
+  }
+
   public pause(threadId: string): void {
     const thread = this.requireThread(threadId);
     if (thread.status !== 'active') {
@@ -431,6 +471,7 @@ export class RuntimeEngine {
     if (thread.workspaceRoot === undefined) {
       result = this.toolAdapter.execute(turn.id, step);
       this.logToolStarted(thread, result);
+      this.finishToolExecution(thread, turn, result);
     } else {
       const toolId = this.createId('tool');
       this.logToolStarted(thread, {
@@ -440,10 +481,174 @@ export class RuntimeEngine {
         toolName: step.toolName,
         status: 'running',
       });
-      result = this.executeWorkspaceReport(thread, turn, step, toolId);
-    }
 
-    this.finishToolExecution(thread, turn, result);
+      if (step.toolName === 'office.process_excel') {
+        const promise = this.executeWorkspaceExcelAsync(thread, turn, step, toolId);
+        this.pendingTurnExecutions.set(turn.id, promise);
+        promise.finally(() => {
+          this.pendingTurnExecutions.delete(turn.id);
+        });
+        return;
+      }
+
+      if (step.toolName === 'office.generate_word_report') {
+        const promise = this.executeWorkspaceWordAsync(thread, turn, step, toolId);
+        this.pendingTurnExecutions.set(turn.id, promise);
+        promise.finally(() => {
+          this.pendingTurnExecutions.delete(turn.id);
+        });
+        return;
+      }
+
+      result = this.executeWorkspaceReport(thread, turn, step, toolId);
+      this.finishToolExecution(thread, turn, result, 'weekly-meeting-report.docx');
+    }
+  }
+
+  private async executeWorkspaceExcelAsync(
+    thread: Thread,
+    turn: Turn,
+    step: Plan['steps'][number],
+    toolId: string,
+  ): Promise<void> {
+    const artifactName = 'sales-summary.xlsx';
+    try {
+      const sandbox = this.requireSandbox(thread.id);
+      let tableData: ParsedTableData | undefined;
+      if (sandbox.hasFile('sales.csv')) {
+        tableData = await this.officeEngine.readTableData(
+          sandbox.readFileBuffer('sales.csv'),
+          'csv',
+        );
+      } else if (sandbox.hasFile('sales.xlsx')) {
+        tableData = await this.officeEngine.readTableData(
+          sandbox.readFileBuffer('sales.xlsx'),
+          'xlsx',
+        );
+      }
+
+      const columns =
+        tableData && tableData.headers.length > 0
+          ? tableData.headers.map((h) => ({ header: h.toUpperCase(), key: h }))
+          : [
+              { header: '负责人 (Owner)', key: 'owner' },
+              { header: '销售额 (Amount)', key: 'amount' },
+            ];
+      const rows =
+        tableData && tableData.rows.length > 0
+          ? tableData.rows
+          : [
+              { owner: 'Maya', amount: 120 },
+              { owner: 'Leo', amount: 80 },
+            ];
+
+      const workbook = await this.officeEngine.createExcelWorkbook({
+        title: 'Sales Summary',
+        sheets: [
+          {
+            name: '销售数据汇总',
+            columns,
+            rows,
+            includeTotalRow: true,
+          },
+        ],
+      });
+      sandbox.writeArtifactBuffer(artifactName, workbook);
+      const result: ToolExecution = {
+        id: toolId,
+        turnId: turn.id,
+        planStepId: step.id,
+        toolName: step.toolName,
+        status: 'completed',
+        output: `${artifactName} was created in the task artifacts directory`,
+      };
+      this.finishToolExecution(thread, turn, result, artifactName);
+    } catch (error) {
+      const result: ToolExecution = {
+        id: toolId,
+        turnId: turn.id,
+        planStepId: step.id,
+        toolName: step.toolName,
+        status: 'failed',
+        error: errorMessage(error),
+      };
+      this.finishToolExecution(thread, turn, result, artifactName);
+    }
+  }
+
+  private async executeWorkspaceWordAsync(
+    thread: Thread,
+    turn: Turn,
+    step: Plan['steps'][number],
+    toolId: string,
+  ): Promise<void> {
+    const artifactName = 'weekly-meeting-report.docx';
+    try {
+      const sandbox = this.requireSandbox(thread.id);
+      const sourceNames = ['meeting-notes.md', 'decisions.txt', 'sales.csv'] as const;
+      const sources = sourceNames
+        .filter((name) => sandbox.hasFile(name))
+        .map((name) => this.documentEngine.readSource(name, sandbox.readFileBuffer(name)));
+
+      let table: { headers: readonly string[]; rows: readonly (readonly string[])[] } | undefined;
+      if (sandbox.hasFile('sales.csv')) {
+        const parsed = await this.officeEngine.readTableData(
+          sandbox.readFileBuffer('sales.csv'),
+          'csv',
+        );
+        if (parsed.headers.length > 0) {
+          table = {
+            headers: parsed.headers,
+            rows: parsed.rows.map((r) => parsed.headers.map((h) => String(r[h] ?? ''))),
+          };
+        }
+      }
+
+      const docx = await this.officeEngine.createRichWordDocument({
+        title: 'Weekly Meeting Report',
+        subtitle: 'Generated by Agent_XXXXX Production Office Engine',
+        sections: [
+          {
+            heading: '会议要点与决策 (Meeting Notes & Decisions)',
+            paragraphs: sources
+              .filter((s) => s.kind !== 'csv')
+              .map((s) => `${s.name}:\n${s.text}`),
+          },
+          ...(table
+            ? [
+                {
+                  heading: '销售数据汇总 (Sales Summary: sales.csv)',
+                  paragraphs: [
+                    '数据源文件: sales.csv',
+                    '下表为从销售数据源自动提取并整理的明细：',
+                  ],
+                  table,
+                },
+              ]
+            : []),
+        ],
+      });
+      sandbox.writeArtifactBuffer(artifactName, docx);
+      const result: ToolExecution = {
+        id: toolId,
+        turnId: turn.id,
+        planStepId: step.id,
+        toolName: step.toolName,
+        status: 'completed',
+        output: `${artifactName} was created in the task artifacts directory`,
+      };
+      this.finishToolExecution(thread, turn, result, artifactName);
+    } catch (error) {
+      const result: ToolExecution = {
+        id: toolId,
+        turnId: turn.id,
+        planStepId: step.id,
+        toolName: step.toolName,
+        status: 'failed',
+        error: errorMessage(error),
+      };
+      this.finishToolExecution(thread, turn, result, artifactName);
+    }
   }
 
   private executeWorkspaceReport(
@@ -498,7 +703,12 @@ export class RuntimeEngine {
     });
   }
 
-  private finishToolExecution(thread: Thread, turn: Turn, result: ToolExecution): void {
+  private finishToolExecution(
+    thread: Thread,
+    turn: Turn,
+    result: ToolExecution,
+    artifactName = 'weekly-meeting-report.docx',
+  ): void {
     if (result.status === 'failed') {
       this.log.append({
         type: 'tool.failed',
@@ -529,11 +739,14 @@ export class RuntimeEngine {
       payload: result,
     });
     const verifyingTurn = this.updateTurn(thread, turn, 'verifying');
-    this.verifyGeneratedArtifact(thread, verifyingTurn);
+    this.verifyGeneratedArtifact(thread, verifyingTurn, artifactName);
   }
 
-  private verifyGeneratedArtifact(thread: Thread, turn: Turn): void {
-    const artifactName = 'weekly-meeting-report.docx';
+  private verifyGeneratedArtifact(
+    thread: Thread,
+    turn: Turn,
+    artifactName = 'weekly-meeting-report.docx',
+  ): void {
     const verificationId = this.createId('verification');
     const started: ArtifactVerification = {
       id: verificationId,
@@ -592,11 +805,26 @@ export class RuntimeEngine {
   ): ArtifactVerification {
     try {
       const artifactPath = this.requireSandbox(thread.id).artifactPath(artifactName);
-      const result = this.evidenceVerifier.verify({
-        artifactPath,
-        requiredText: ['Weekly Meeting Report', 'meeting-notes.md', 'decisions.txt', 'sales.csv'],
-        requireDocxStructure: true,
-      });
+      const isXlsx = artifactName.toLowerCase().endsWith('.xlsx');
+      const result = this.evidenceVerifier.verify(
+        isXlsx
+          ? {
+              artifactPath,
+              requireXlsxStructure: true,
+              requireDocxStructure: false,
+            }
+          : {
+              artifactPath,
+              requiredText: [
+                'Weekly Meeting Report',
+                'meeting-notes.md',
+                'decisions.txt',
+                'sales.csv',
+              ],
+              requireDocxStructure: true,
+              requireXlsxStructure: false,
+            },
+      );
       const evidence = [
         ...result.evidence,
         ...result.checks.map((check) => `${check.name}:${check.status}`),

@@ -66,6 +66,14 @@ export class AppServer implements AppServerContract {
     return this.runtime.respondApproval(input);
   }
 
+  public async respondApprovalAsync(input: RespondApprovalInput): Promise<Approval> {
+    return this.runtime.respondApprovalAsync(input);
+  }
+
+  public async waitForTurnCompletion(turnId: string, timeoutMs?: number): Promise<Turn> {
+    return this.runtime.waitForTurnCompletion(turnId, timeoutMs);
+  }
+
   public pause(threadId: string): void {
     this.runtime.pause(threadId);
   }

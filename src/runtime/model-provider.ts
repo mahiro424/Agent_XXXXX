@@ -44,6 +44,18 @@ export const DEFAULT_AGENT_TOOLS: readonly AgentToolDefinition[] = [
     requiresApproval: false,
   },
   {
+    name: 'office.process_excel',
+    description: '读取工作区内的 CSV/XLSX 数据表格，进行数值求和/平均统计计算，生成带样式与求和公式的 Excel 工作簿 (.xlsx)',
+    risk: 'write',
+    requiresApproval: true,
+  },
+  {
+    name: 'office.generate_word_report',
+    description: '读取会议纪要、结论与数据，生成包含主标题、分节正文与格式化对比表格的高保真 Word 报告 (.docx)',
+    risk: 'write',
+    requiresApproval: true,
+  },
+  {
     name: 'workspace.write_report',
     description: '读取会议材料与决策数据，在任务产物目录下生成结构化会议周报 Word 文档 (.docx)',
     risk: 'write',

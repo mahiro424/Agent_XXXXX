@@ -94,6 +94,15 @@ export class LocalWorkspaceSandbox {
       .map((e) => e.name);
   }
 
+  public hasFile(targetPath: string): boolean {
+    const absolutePath = this.resolveInsideRoot(targetPath);
+    return (
+      isWithin(this.rootDir, absolutePath) &&
+      existsSync(absolutePath) &&
+      statSync(absolutePath).isFile()
+    );
+  }
+
   public readFile(targetPath: string): string {
     return this.readFileBuffer(targetPath).toString('utf8');
   }

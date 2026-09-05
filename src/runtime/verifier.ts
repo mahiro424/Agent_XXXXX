@@ -16,6 +16,7 @@ export interface VerificationRequest {
   readonly requiredText?: readonly string[];
   readonly optionalText?: readonly string[];
   readonly requireDocxStructure?: boolean;
+  readonly requireXlsxStructure?: boolean;
   readonly reconciliationRequired?: boolean;
 }
 
@@ -146,6 +147,18 @@ export class EvidenceVerifier {
       });
     }
 
+    if (request.requireXlsxStructure || request.artifactPath.toLowerCase().endsWith('.xlsx')) {
+      const structured = hasXlsxStructure(secondRead);
+      checks.push({
+        name: 'xlsx_structure',
+        required: true,
+        status: structured ? 'passed' : 'failed',
+        detail: structured
+          ? 'xlsx package markers and workbook entries were found'
+          : 'xlsx package markers or workbook entries are missing',
+      });
+    }
+
     if (request.reconciliationRequired) {
       checks.push({
         name: 'reconciliation_gate',
@@ -228,5 +241,16 @@ function hasDocxStructure(buffer: Buffer): boolean {
     packageText.includes('[Content_Types].xml') &&
     packageText.includes('_rels/.rels') &&
     packageText.includes('word/document.xml')
+  );
+}
+
+function hasXlsxStructure(buffer: Buffer): boolean {
+  if (buffer.length < 4 || buffer.subarray(0, 4).toString('binary') !== 'PK\x03\x04') {
+    return false;
+  }
+  const packageText = buffer.toString('latin1');
+  return (
+    packageText.includes('[Content_Types].xml') &&
+    packageText.includes('xl/workbook.xml')
   );
 }
