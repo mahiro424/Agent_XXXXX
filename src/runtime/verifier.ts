@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
+import { LocalDocumentEngine } from './document-engine.js';
 import type { RuntimeClock, RuntimeIdFactory } from './event-log.js';
 
 export type VerificationStatus =
@@ -113,7 +114,7 @@ export class EvidenceVerifier {
       detail: 'artifact was read again and hashed',
     });
 
-    const text = secondRead.toString('utf8');
+    const text = readArtifactText(request.artifactPath, secondRead);
     for (const expected of request.requiredText ?? []) {
       const passed = text.includes(expected);
       checks.push({
@@ -204,6 +205,17 @@ export class EvidenceVerifier {
       summary,
     };
     return sha256 === undefined ? resultBase : { ...resultBase, sha256 };
+  }
+}
+
+function readArtifactText(artifactPath: string, buffer: Buffer): string {
+  if (!artifactPath.toLowerCase().endsWith('.docx')) {
+    return buffer.toString('utf8');
+  }
+  try {
+    return new LocalDocumentEngine().readDocx(buffer);
+  } catch {
+    return '';
   }
 }
 

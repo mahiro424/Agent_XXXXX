@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none';"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agent_XXXXX Desktop Demo</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+        color: #111827;
+        background: #f9fafb;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-width: 1024px; background: #f9fafb; }
+      button, textarea, select { font: inherit; }
+      button { cursor: pointer; border: 0; border-radius: 8px; padding: 9px 13px; background: #1e6fff; color: #fff; }
+      button:disabled { cursor: not-allowed; background: #d1d5db; color: #6b7280; }
+      textarea, select { border: 1px solid #d1d5db; border-radius: 8px; background: #fff; color: #111827; padding: 9px 11px; }
+      textarea { min-height: 108px; resize: vertical; }
+      .desktop-shell { display: grid; grid-template-columns: 230px minmax(0, 1fr) 330px; gap: 18px; min-height: 100vh; padding: 18px; }
+      [data-page="app-shell"] { display: contents; }
+      [data-page="app-shell"] > nav { grid-column: 1; grid-row: 1 / span 3; display: flex; flex-direction: column; gap: 8px; background: #fff; padding: 14px; border-radius: 12px; }
+      [data-page="app-shell"] > nav button { text-align: left; background: transparent; color: #4b5563; }
+      [data-page="app-shell"] > nav button[aria-current="page"] { background: #eaf1ff; color: #0b2e75; }
+      [data-page="app-shell"] > header { grid-column: 2 / span 2; grid-row: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; background: #fff; padding: 12px 14px; border-radius: 12px; }
+      [data-page="app-shell"] > header [data-status] { padding: 5px 9px; border-radius: 999px; background: #f3f4f6; font-size: 12px; }
+      [data-page="app-shell"] > header button { margin-left: auto; background: #111827; }
+      [data-route-content] { display: none; }
+      [data-desktop-content] { grid-column: 2; grid-row: 2; min-width: 0; }
+      [data-page="demo-home"], [data-page="task-plan"], [data-event-timeline] { background: #fff; border-radius: 12px; padding: 24px; }
+      .welcome { display: flex; flex-direction: column; gap: 12px; }
+      .welcome h1, [data-page="task-plan"] h2, [data-event-timeline] h2 { margin-top: 0; }
+      .quick-tasks { display: flex; flex-wrap: wrap; gap: 8px; }
+      .quick-tasks button, [data-action="select-workspace"] { background: #f3f4f6; color: #374151; }
+      .workspace-status { display: flex; align-items: center; gap: 10px; padding: 10px; background: #f3f4f6; border-radius: 8px; word-break: break-word; }
+      .workspace-status [data-status="workspace"] { flex: 1; }
+      .model-status { color: #4b5563; font-size: 13px; }
+      [data-plan-steps], [data-event-timeline] ol { display: flex; flex-direction: column; gap: 10px; padding-left: 24px; }
+      [data-plan-step] { display: flex; flex-direction: column; gap: 3px; padding: 10px; background: #f9fafb; border-radius: 8px; }
+      [data-plan-step] [data-risk] { color: #6b7280; font-size: 12px; }
+      [data-approval-status="pending"] { padding: 14px; background: #fff7ed; border-radius: 8px; }
+      [data-approval-status="pending"] button + button { margin-left: 8px; background: #6b7280; }
+      [data-event-timeline] { grid-column: 3; grid-row: 2; min-width: 0; max-height: calc(100vh - 120px); overflow: hidden; }
+      [data-event-timeline] ol { max-height: calc(100vh - 190px); overflow: hidden; }
+      [data-event-timeline] li { display: flex; flex-direction: column; gap: 3px; font-size: 12px; overflow-wrap: anywhere; }
+      [data-event-timeline] time { color: #6b7280; }
+      [data-event-timeline] strong { color: #1450c4; }
+      #desktop-feedback { grid-column: 2 / span 2; grid-row: 3; min-height: 22px; color: #0c8a4f; }
+    </style>
+  </head>
+  <body>
+    <div id="app" aria-live="polite">正在加载桌面会话…</div>
+    <script type="module" src="./renderer.js"></script>
+  </body>
+</html>

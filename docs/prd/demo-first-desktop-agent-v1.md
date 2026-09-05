@@ -334,6 +334,19 @@ V1 默认 `Local Workspace Mode`；后续通过任务工作区、快照或 Git W
 
 ---
 
+## 当前实现进度（2026-09-05）
+
+当前仓库已完成第一条可离线验收的 Local Workspace 办公产物主链路：
+
+- `LocalDocumentEngine` 已通过 Node 内置能力生成最小有效 OOXML/ZIP `.docx`，支持 Markdown、文本和 CSV 输入归一化、文档重读与纯文本渲染；所有文件读写仍经过 `LocalWorkspaceSandbox`，产物写入 `artifacts` 且禁止覆盖。
+- 带 `workspaceRoot` 的 Runtime 批准执行会读取 `meeting-notes.md`、`decisions.txt`、`sales.csv`，生成 `weekly-meeting-report.docx`，再由 `EvidenceVerifier` 独立检查存在、非空、重读、关键文本、结构和 SHA-256，并通过 `artifact.verified` 事件结束。
+- `tests/document-engine.test.ts` 和 `tests/golden-journey.test.ts` 已覆盖真实 `.docx` 产物与完整 App Server Journey；原有 Fixture Document Engine 仍保留，用于表达未接入真实 Office/LibreOffice 渲染器时的能力边界。
+- `eventLogPath` 已支持本地 append-only JSONL 事件日志；App Server 重启后可恢复 thread/turn/plan/approval 历史，待审批保持等待，执行中或验证中的轮次统一进入 `RECONCILIATION_REQUIRED`，不会自动重放写入。
+- Electron Demo 壳已接入：`DesktopSession`、主进程/preload/Renderer、白名单 IPC、工作区选择、计划审批、停止动作和事件时间线均已落地；`npm run build` 可生成 `dist/desktop/main.js`、`preload.js`、`renderer.js` 和 `index.html`。
+- 尚未完成：真实窗口与完整桌面 UI 体验验证、Office/LibreOffice 黄金文件兼容性验证、完整 Playwright 桌面 E2E，以及 SQLite/多进程并发写入和云端同步。
+
+---
+
 ## 范围外
 
 V1 不包含：Cloud Runtime；浏览器和邮箱等开放互联网应用；自动付款、发送邮件、提交审批和账号注册；摄像头、麦克风、屏幕录制；系统设置、注册表和驱动操作；多用户云端控制台；手机端；多 Agent 自由协商；自研 GUI 基础模型；编程 Agent；完整 Office 编辑器；PiP/RDP 隔离桌面；默认主桌面鼠标键盘接管；MCP 扩展生态。Worktree/Task Workspace 是后续增强能力，V1 先用 Local Workspace 和任务产物目录完成 Demo。
@@ -350,4 +363,4 @@ V1 不包含：Cloud Runtime；浏览器和邮箱等开放互联网应用；自�
 - Windows Bridge 仅作为可选辅助 Adapter，不是 Demo 主链路硬依赖；
 - 文件引擎最终选型以 Windows 黄金文件验证为准；
 - 参考图仅用于 `app-shell`/`demo-home` 的气质与布局方向，页面规格以本 PRD 为准；
-- 本 PRD 为本地评审稿，尚未发布到 GitHub Issue。
+- 本 PRD 已发布为 GitHub Issue #1（PRD: Codex-style Local Workspace Desktop Agent V1 Demo）。

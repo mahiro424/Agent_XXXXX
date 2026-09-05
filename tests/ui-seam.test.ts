@@ -5,7 +5,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { AppServer } from '../src/runtime/app-server.js';
 import { AppShellController } from '../src/ui/app-shell.js';
 import { DemoHomeController } from '../src/ui/demo-home.js';
-import { renderAppShell, renderDemoHome } from '../src/ui/render.js';
+import {
+  renderAppShell,
+  renderDemoHome,
+  renderEventTimeline,
+  renderTaskPlan,
+} from '../src/ui/render.js';
 
 const roots: string[] = [];
 
@@ -134,5 +139,50 @@ describe('demo-home UI contract', () => {
     expect(renderDemoHome(home.view())).toContain('data-page="demo-home"');
     expect(renderDemoHome(home.view())).toContain('data-action="submit-plan"');
     expect(renderDemoHome(home.view())).toContain('尚未选择工作区');
+  });
+
+  it('renders plan approval controls and escaped event timeline entries', () => {
+    const plan = renderTaskPlan({
+      threadStatus: 'active',
+      turnStatus: 'awaiting_approval',
+      plan: {
+        id: 'plan-1',
+        turnId: 'turn-1',
+        status: 'proposed',
+        steps: [
+          {
+            id: 'step-1',
+            title: '<读取材料>',
+            toolName: 'workspace.read',
+            risk: 'read',
+            requiresApproval: true,
+          },
+        ],
+      },
+      approval: {
+        id: 'approval-1',
+        turnId: 'turn-1',
+        planId: 'plan-1',
+        status: 'pending',
+        reason: '<需要用户确认>',
+      },
+    });
+    const timeline = renderEventTimeline([
+      {
+        id: 'event-1',
+        version: 1,
+        sequence: 1,
+        occurredAt: '2026-09-05T00:00:00.000Z',
+        type: 'approval.requested',
+        threadId: 'thread-1',
+        payload: { reason: '<safe>' },
+      },
+    ]);
+
+    expect(plan).toContain('data-action="approve-plan"');
+    expect(plan).toContain('data-action="reject-plan"');
+    expect(plan).toContain('&lt;读取材料&gt;');
+    expect(timeline).toContain('data-event-type="approval.requested"');
+    expect(timeline).toContain('&lt;safe&gt;');
   });
 });

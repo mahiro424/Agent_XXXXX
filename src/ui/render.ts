@@ -1,3 +1,8 @@
+import type {
+  DesktopApprovalView,
+  DesktopEventDto,
+  DesktopPlanView,
+} from '../desktop/session.js';
 import type { AppShellView } from './app-shell.js';
 import type { DemoHomeView } from './demo-home.js';
 
@@ -64,7 +69,12 @@ export function renderDemoHome(view: DemoHomeView): string {
     <div class="quick-tasks" aria-label="快捷任务">${quickTasks}</div>
     <label for="task-input">任务</label>
     <textarea id="task-input" name="task" aria-label="任务输入">${escapeHtml(view.taskInput)}</textarea>
-    <div class="workspace-status">${workspace}</div>
+    <div class="workspace-status">${workspace}<button type="button" data-action="select-workspace">选择工作区</button></div>
+    <label for="model-mode">模型模式</label>
+    <select id="model-mode" data-action="set-model-mode" aria-label="模型模式">
+      <option value="fake" ${view.modelMode === 'fake' ? 'selected' : ''}>Fake Model Demo</option>
+      <option value="live" ${view.modelMode === 'live' ? 'selected' : ''}>Live Model Demo</option>
+    </select>
     <div class="model-status" data-status="model">模型：${escapeHtml(view.modelMode)}</div>
     <button type="button" data-action="submit-plan" ${view.canSubmit ? '' : 'disabled'}>${escapeHtml(
       view.submitLabel,
@@ -72,4 +82,65 @@ export function renderDemoHome(view: DemoHomeView): string {
     ${disabled}
   </section>
 </main>`;
+}
+
+export interface TaskPlanRenderInput {
+  readonly threadStatus?: string;
+  readonly turnStatus?: string;
+  readonly plan?: DesktopPlanView;
+  readonly approval?: DesktopApprovalView;
+}
+
+export function renderTaskPlan(view: TaskPlanRenderInput): string {
+  const steps =
+    view.plan?.steps
+      .map(
+        (step, index) =>
+          `<li data-plan-step="${escapeHtml(step.id)}"><strong>${index + 1}. ${escapeHtml(
+            step.title,
+          )}</strong><span data-tool="${escapeHtml(step.toolName)}">${escapeHtml(
+            step.toolName,
+          )}</span><span data-risk="${escapeHtml(step.risk)}">风险：${escapeHtml(
+            step.risk,
+          )}</span></li>`,
+      )
+      .join('') ?? '<li data-status="empty-plan">暂无计划</li>';
+  const approval = view.approval;
+  const approvalMarkup =
+    approval === undefined
+      ? '<p data-status="approval">暂无审批</p>'
+      : `<section data-approval-status="${escapeHtml(approval.status)}" aria-labelledby="approval-title">
+  <h3 id="approval-title">审批</h3>
+  <p data-approval-reason>${escapeHtml(approval.reason)}</p>
+  ${
+    approval.status === 'pending'
+      ? '<button type="button" data-action="approve-plan">批准执行</button><button type="button" data-action="reject-plan">拒绝执行</button>'
+      : `<p role="status">审批状态：${escapeHtml(approval.status)}</p>`
+  }
+</section>`;
+
+  return `<section data-page="task-plan" aria-labelledby="task-plan-title">
+  <h2 id="task-plan-title">任务计划</h2>
+  <p data-status="thread">Thread：${escapeHtml(view.threadStatus ?? 'unknown')}</p>
+  <p data-status="turn">Turn：${escapeHtml(view.turnStatus ?? 'unknown')}</p>
+  <ol data-plan-steps>${steps}</ol>
+  ${approvalMarkup}
+</section>`;
+}
+
+export function renderEventTimeline(events: readonly DesktopEventDto[]): string {
+  const items = events
+    .map((event) => {
+      const payload = JSON.stringify(event.payload) ?? '';
+      return `<li data-event-type="${escapeHtml(event.type)}"><time datetime="${escapeHtml(
+        event.occurredAt,
+      )}">#${event.sequence}</time><strong>${escapeHtml(event.type)}</strong><span>${escapeHtml(
+        payload,
+      )}</span></li>`;
+    })
+    .join('');
+  return `<section data-event-timeline aria-labelledby="event-timeline-title">
+  <h2 id="event-timeline-title">事件时间线</h2>
+  <ol>${items || '<li data-status="empty-events">暂无事件</li>'}</ol>
+</section>`;
 }

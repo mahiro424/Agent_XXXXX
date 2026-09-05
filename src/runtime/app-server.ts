@@ -21,12 +21,20 @@ export interface AppServerContract {
   resumeThread(threadId: string): void;
   cancel(threadId: string): void;
   getThread(threadId: string): Thread;
+  listThreads(): readonly Thread[];
   getTurn(turnId: string): Turn;
   listEvents(threadId: string): readonly AnyRuntimeEvent[];
+  listAllEvents(): readonly AnyRuntimeEvent[];
   subscribeEvents(listener: (event: AnyRuntimeEvent) => void): () => void;
   checkSandbox(threadId: string, input: SandboxCheckInput): SandboxDecision;
   readWorkspaceFile(threadId: string, targetPath: string): string;
+  readWorkspaceFileBuffer(threadId: string, targetPath: string): Buffer;
   writeArtifact(threadId: string, artifactName: string, content: string): ArtifactWriteResult;
+  writeArtifactBuffer(
+    threadId: string,
+    artifactName: string,
+    content: Uint8Array,
+  ): ArtifactWriteResult;
   verifyArtifact(
     threadId: string,
     artifactName: string,
@@ -69,12 +77,20 @@ export class AppServer implements AppServerContract {
     return this.runtime.getThread(threadId);
   }
 
+  public listThreads(): readonly Thread[] {
+    return this.runtime.listThreads();
+  }
+
   public getTurn(turnId: string): Turn {
     return this.runtime.getTurn(turnId);
   }
 
   public listEvents(threadId: string): readonly AnyRuntimeEvent[] {
     return this.runtime.listEvents(threadId);
+  }
+
+  public listAllEvents(): readonly AnyRuntimeEvent[] {
+    return this.runtime.listAllEvents();
   }
 
   public subscribeEvents(listener: (event: AnyRuntimeEvent) => void): () => void {
@@ -89,12 +105,24 @@ export class AppServer implements AppServerContract {
     return this.runtime.readWorkspaceFile(threadId, targetPath);
   }
 
+  public readWorkspaceFileBuffer(threadId: string, targetPath: string): Buffer {
+    return this.runtime.readWorkspaceFileBuffer(threadId, targetPath);
+  }
+
   public writeArtifact(
     threadId: string,
     artifactName: string,
     content: string,
   ): ArtifactWriteResult {
     return this.runtime.writeArtifact(threadId, artifactName, content);
+  }
+
+  public writeArtifactBuffer(
+    threadId: string,
+    artifactName: string,
+    content: Uint8Array,
+  ): ArtifactWriteResult {
+    return this.runtime.writeArtifactBuffer(threadId, artifactName, content);
   }
 
   public verifyArtifact(

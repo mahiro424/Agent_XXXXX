@@ -84,6 +84,10 @@ export class LocalWorkspaceSandbox {
   }
 
   public readFile(targetPath: string): string {
+    return this.readFileBuffer(targetPath).toString('utf8');
+  }
+
+  public readFileBuffer(targetPath: string): Buffer {
     const decision = this.check({ operation: 'read', targetPath });
     this.assertAllowed(decision);
     const absolutePath = this.resolveInsideRoot(targetPath);
@@ -91,10 +95,17 @@ export class LocalWorkspaceSandbox {
       throw new Error(`workspace file is not readable: ${targetPath}`);
     }
     this.assertRealPathInsideRoot(absolutePath);
-    return readFileSync(absolutePath, 'utf8');
+    return readFileSync(absolutePath);
   }
 
   public writeArtifact(artifactName: string, content: string): ArtifactWriteResult {
+    return this.writeArtifactBuffer(artifactName, Buffer.from(content, 'utf8'));
+  }
+
+  public writeArtifactBuffer(
+    artifactName: string,
+    content: Uint8Array,
+  ): ArtifactWriteResult {
     const targetPath = join(this.artifactsDirName, artifactName);
     const decision = this.check({ operation: 'write_artifact', targetPath });
     this.assertAllowed(decision);
@@ -116,7 +127,7 @@ export class LocalWorkspaceSandbox {
     }
 
     try {
-      writeFileSync(absolutePath, content, { encoding: 'utf8', flag: 'wx' });
+      writeFileSync(absolutePath, Buffer.from(content), { flag: 'wx' });
     } catch (error) {
       if (isFileExistsError(error)) {
         const existsDecision = this.createDecision(
@@ -134,7 +145,7 @@ export class LocalWorkspaceSandbox {
 
     return {
       path: absolutePath,
-      bytes: Buffer.byteLength(content, 'utf8'),
+      bytes: content.byteLength,
     };
   }
 
