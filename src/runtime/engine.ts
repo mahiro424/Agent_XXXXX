@@ -10,12 +10,16 @@ import {
   transitionThreadStatus,
   transitionTurnStatus,
 } from './state-machine.js';
+import { LocalWorkspaceSandbox } from './sandbox.js';
 import type {
   AnyRuntimeEvent,
   Approval,
   ArtifactVerification,
+  ArtifactWriteResult,
   CreateThreadInput,
   Plan,
+  SandboxCheckInput,
+  SandboxDecision,
   StartTurnInput,
   Thread,
   ThreadStatus,
@@ -61,6 +65,7 @@ export class RuntimeEngine {
   private readonly model: FakeModel;
   private readonly toolAdapter: FakeToolAdapter;
   private readonly verifier: FakeVerifier;
+  private readonly sandboxes = new Map<string, LocalWorkspaceSandbox>();
   private readonly now: RuntimeClock;
   private readonly createId: RuntimeIdFactory;
 
@@ -75,14 +80,36 @@ export class RuntimeEngine {
 
   public createThread(input: CreateThreadInput): Thread {
     const timestamp = this.now();
-    const thread: Thread = {
+    const threadBase = {
       id: this.createId('thread'),
       workspaceId: input.workspaceId,
-      status: 'active',
+      status: 'active' as const,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
+    const thread: Thread =
+      input.workspaceRoot === undefined
+        ? threadBase
+        : { ...threadBase, workspaceRoot: input.workspaceRoot };
+    const sandbox =
+      input.workspaceRoot === undefined
+        ? undefined
+        : new LocalWorkspaceSandbox({
+            rootDir: input.workspaceRoot,
+            now: this.now,
+            idFactory: this.createId,
+            onDecision: (decision) => {
+              this.log.append({
+                type: 'sandbox.decision',
+                threadId: thread.id,
+                payload: decision,
+              });
+            },
+          });
     this.threads.set(thread.id, thread);
+    if (sandbox) {
+      this.sandboxes.set(thread.id, sandbox);
+    }
     this.log.append({ type: 'thread.created', threadId: thread.id, payload: thread });
     return thread;
   }
@@ -234,6 +261,22 @@ export class RuntimeEngine {
     return this.log.subscribe(listener);
   }
 
+  public checkSandbox(threadId: string, input: SandboxCheckInput): SandboxDecision {
+    return this.requireSandbox(threadId).check(input);
+  }
+
+  public readWorkspaceFile(threadId: string, targetPath: string): string {
+    return this.requireSandbox(threadId).readFile(targetPath);
+  }
+
+  public writeArtifact(
+    threadId: string,
+    artifactName: string,
+    content: string,
+  ): ArtifactWriteResult {
+    return this.requireSandbox(threadId).writeArtifact(artifactName, content);
+  }
+
   private executeApprovedTurn(thread: Thread, turn: Turn, plan: Plan): void {
     const step = plan.steps[0];
     if (!step) {
@@ -377,6 +420,15 @@ export class RuntimeEngine {
   private currentTurn(threadId: string): Turn | undefined {
     const turns = [...this.turns.values()].filter((turn) => turn.threadId === threadId);
     return turns.at(-1);
+  }
+
+  private requireSandbox(threadId: string): LocalWorkspaceSandbox {
+    const thread = this.requireThread(threadId);
+    const sandbox = this.sandboxes.get(thread.id);
+    if (!sandbox) {
+      throw new Error(`thread ${thread.id} has no workspaceRoot`);
+    }
+    return sandbox;
   }
 
   private requireThread(threadId: string): Thread {

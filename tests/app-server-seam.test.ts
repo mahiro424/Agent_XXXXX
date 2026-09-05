@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import { AppServer } from '../src/runtime/app-server.js';
 import type { AnyRuntimeEvent } from '../src/runtime/protocol.js';
 
@@ -9,6 +12,14 @@ function approvalIdFor(events: readonly AnyRuntimeEvent[]): string {
   }
   return event.payload.id;
 }
+
+const workspaceRoots: string[] = [];
+
+afterEach(() => {
+  for (const root of workspaceRoots.splice(0)) {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 describe('App Server Seam', () => {
   it('exposes a versioned event stream without leaking RuntimeEngine internals', () => {
@@ -69,5 +80,46 @@ describe('App Server Seam', () => {
     expect(() => server.startTurn({ threadId: thread.id, input: '盲目重试' })).toThrow(
       'reconciliation_required',
     );
+  });
+
+  it('reads and writes through the public workspace contract and emits sandbox events', () => {
+    const root = mkdtempSync(join(tmpdir(), 'agent-app-server-workspace-'));
+    workspaceRoots.push(root);
+    writeFileSync(join(root, 'meeting-notes.md'), 'workspace input', 'utf8');
+    const server = new AppServer();
+    const received: AnyRuntimeEvent[] = [];
+    server.subscribeEvents((event) => received.push(event));
+    const thread = server.createThread({ workspaceId: 'demo-workspace', workspaceRoot: root });
+
+    expect(server.readWorkspaceFile(thread.id, 'meeting-notes.md')).toBe('workspace input');
+    const artifact = server.writeArtifact(thread.id, 'report.txt', 'verified output');
+    expect(readFileSync(artifact.path, 'utf8')).toBe('verified output');
+    expect(server.checkSandbox(thread.id, { operation: 'network' })).toMatchObject({
+      decision: 'denied',
+      reasonCode: 'network_disabled',
+    });
+    expect(() => server.readWorkspaceFile(thread.id, '../outside.txt')).toThrow(
+      'path_outside_workspace',
+    );
+
+    const sandboxEvents = received.filter((event) => event.type === 'sandbox.decision');
+    expect(sandboxEvents).toHaveLength(4);
+    expect(sandboxEvents.map((event) => event.payload.reasonCode)).toEqual([
+      'workspace_read_allowed',
+      'artifact_write_allowed',
+      'network_disabled',
+      'path_outside_workspace',
+    ]);
+  });
+
+  it('does not bypass the protocol when a thread has no workspace root', () => {
+    const server = new AppServer();
+    const thread = server.createThread({ workspaceId: 'memory-only' });
+
+    expect(() => server.checkSandbox(thread.id, { operation: 'read', targetPath: 'input.txt' })).toThrow(
+      'no workspaceRoot',
+    );
+    expect(() => server.readWorkspaceFile(thread.id, 'input.txt')).toThrow('no workspaceRoot');
+    expect(() => server.writeArtifact(thread.id, 'report.txt', 'output')).toThrow('no workspaceRoot');
   });
 });

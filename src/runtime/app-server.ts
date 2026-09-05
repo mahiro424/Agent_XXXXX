@@ -3,7 +3,10 @@ import type { RuntimeEngineOptions, RespondApprovalInput } from './engine.js';
 import type {
   AnyRuntimeEvent,
   Approval,
+  ArtifactWriteResult,
   CreateThreadInput,
+  SandboxCheckInput,
+  SandboxDecision,
   StartTurnInput,
   Thread,
   Turn,
@@ -20,6 +23,9 @@ export interface AppServerContract {
   getTurn(turnId: string): Turn;
   listEvents(threadId: string): readonly AnyRuntimeEvent[];
   subscribeEvents(listener: (event: AnyRuntimeEvent) => void): () => void;
+  checkSandbox(threadId: string, input: SandboxCheckInput): SandboxDecision;
+  readWorkspaceFile(threadId: string, targetPath: string): string;
+  writeArtifact(threadId: string, artifactName: string, content: string): ArtifactWriteResult;
 }
 
 export class AppServer implements AppServerContract {
@@ -67,5 +73,21 @@ export class AppServer implements AppServerContract {
 
   public subscribeEvents(listener: (event: AnyRuntimeEvent) => void): () => void {
     return this.runtime.subscribeEvents(listener);
+  }
+
+  public checkSandbox(threadId: string, input: SandboxCheckInput): SandboxDecision {
+    return this.runtime.checkSandbox(threadId, input);
+  }
+
+  public readWorkspaceFile(threadId: string, targetPath: string): string {
+    return this.runtime.readWorkspaceFile(threadId, targetPath);
+  }
+
+  public writeArtifact(
+    threadId: string,
+    artifactName: string,
+    content: string,
+  ): ArtifactWriteResult {
+    return this.runtime.writeArtifact(threadId, artifactName, content);
   }
 }

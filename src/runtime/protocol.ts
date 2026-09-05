@@ -20,6 +20,48 @@ export type TurnStatus =
   | 'reconciliation_required';
 
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected';
+
+export type SandboxOperation =
+  | 'read'
+  | 'write_artifact'
+  | 'workspace_write'
+  | 'overwrite_input'
+  | 'external_access'
+  | 'network';
+
+export type SandboxDecisionOutcome = 'allowed' | 'denied' | 'approval_required';
+
+export type SandboxReasonCode =
+  | 'workspace_read_allowed'
+  | 'artifact_write_allowed'
+  | 'workspace_write_requires_approval'
+  | 'external_access_requires_approval'
+  | 'network_disabled'
+  | 'path_outside_workspace'
+  | 'input_overwrite_denied'
+  | 'artifact_exists'
+  | 'workspace_required';
+
+export interface SandboxCheckInput {
+  readonly operation: SandboxOperation;
+  readonly targetPath?: string;
+}
+
+export interface SandboxDecision {
+  readonly id: string;
+  readonly operation: SandboxOperation;
+  readonly decision: SandboxDecisionOutcome;
+  readonly reasonCode: SandboxReasonCode;
+  readonly reason: string;
+  readonly targetPath?: string;
+  readonly occurredAt: string;
+}
+
+export interface ArtifactWriteResult {
+  readonly path: string;
+  readonly bytes: number;
+}
+
 export type ToolExecutionStatus =
   | 'pending'
   | 'running'
@@ -36,6 +78,7 @@ export type ArtifactVerificationStatus =
 export interface Thread {
   readonly id: string;
   readonly workspaceId: string;
+  readonly workspaceRoot?: string;
   readonly status: ThreadStatus;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -108,7 +151,8 @@ export type RuntimeEventType =
   | 'artifact.verification_started'
   | 'artifact.verified'
   | 'artifact.verification_failed'
-  | 'artifact.reconciliation_required';
+  | 'artifact.reconciliation_required'
+  | 'sandbox.decision';
 
 export interface RuntimeEventPayloadMap {
   'thread.created': Thread;
@@ -126,6 +170,7 @@ export interface RuntimeEventPayloadMap {
   'artifact.verified': ArtifactVerification;
   'artifact.verification_failed': ArtifactVerification;
   'artifact.reconciliation_required': ArtifactVerification;
+  'sandbox.decision': SandboxDecision;
 }
 
 export interface RuntimeEvent<T extends RuntimeEventType = RuntimeEventType> {
@@ -145,6 +190,7 @@ export type AnyRuntimeEvent = {
 
 export interface CreateThreadInput {
   readonly workspaceId: string;
+  readonly workspaceRoot?: string;
 }
 
 export interface StartTurnInput {
