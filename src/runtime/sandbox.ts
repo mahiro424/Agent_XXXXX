@@ -76,6 +76,11 @@ export class LocalWorkspaceSandbox {
   }
 
   public artifactPath(artifactName: string): string {
+    const directPath = resolve(this.rootDir, artifactName);
+    if (existsSync(directPath)) {
+      this.assertRealPathInsideRoot(directPath);
+      return directPath;
+    }
     const targetPath = join(this.artifactsDirName, artifactName);
     const decision = this.check({ operation: 'read', targetPath });
     this.assertAllowed(decision);

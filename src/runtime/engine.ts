@@ -584,10 +584,14 @@ export class RuntimeEngine {
       status: 'running',
     });
 
+    const stepArgs = step.arguments ?? {};
     const targetArtifact =
-      step.toolName === 'office.process_excel'
+      step.targetArtifact ||
+      (stepArgs.target as string) ||
+      (stepArgs.path as string) ||
+      (step.toolName === 'office.process_excel' || step.toolName === 'workspace.excel'
         ? 'sales-summary.xlsx'
-        : 'weekly-meeting-report.docx';
+        : 'weekly-meeting-report.docx');
 
     const context = this.createToolContext(thread);
     const handler = this.toolRegistry.findHandler(step.toolName);
@@ -606,7 +610,7 @@ export class RuntimeEngine {
     }
 
     try {
-      const execResult = handler.execute(step.toolName, {}, context);
+      const execResult = handler.execute(step.toolName, stepArgs, context);
       if (execResult instanceof Promise) {
         const promise = execResult
           .then((output) => {
@@ -702,7 +706,7 @@ export class RuntimeEngine {
     thread: Thread,
     turn: Turn,
     result: ToolExecution,
-    artifactName = 'weekly-meeting-report.docx',
+    artifactName?: string,
   ): void {
     if (result.status === 'failed') {
       this.log.append({
@@ -733,8 +737,24 @@ export class RuntimeEngine {
       turnId: turn.id,
       payload: result,
     });
-    const verifyingTurn = this.updateTurn(thread, turn, 'verifying');
-    this.verifyGeneratedArtifact(thread, verifyingTurn, artifactName);
+
+    const producesArtifact = Boolean(
+      artifactName && (
+        result.toolName.includes('excel') ||
+        result.toolName.includes('word') ||
+        result.toolName.includes('report') ||
+        result.toolName === 'workspace.write_file' ||
+        artifactName.endsWith('.docx') ||
+        artifactName.endsWith('.xlsx')
+      )
+    );
+
+    if (producesArtifact && artifactName) {
+      const verifyingTurn = this.updateTurn(thread, turn, 'verifying');
+      this.verifyGeneratedArtifact(thread, verifyingTurn, artifactName);
+    } else {
+      this.updateTurn(thread, turn, 'completed');
+    }
   }
 
   private verifyGeneratedArtifact(

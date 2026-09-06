@@ -126,6 +126,8 @@ export interface PlanStep {
   readonly toolName: string;
   readonly risk: 'read' | 'write' | 'external';
   readonly requiresApproval: boolean;
+  readonly arguments?: Record<string, unknown> | undefined;
+  readonly targetArtifact?: string | undefined;
 }
 
 export interface Plan {

@@ -77,6 +77,8 @@ export class DeterministicModelProvider implements ModelProvider {
     let toolName = this.defaultStep?.toolName;
     let risk: 'read' | 'write' | 'external' = 'write';
     let requiresApproval = this.defaultStep?.requiresApproval ?? true;
+    let stepArgs: Record<string, unknown> | undefined;
+    let targetArtifact: string | undefined;
 
     if (!title || !toolName) {
       const text = input.userInput.toLowerCase();
@@ -91,6 +93,13 @@ export class DeterministicModelProvider implements ModelProvider {
         toolName = 'workspace.excel';
         risk = 'write';
         requiresApproval = true;
+        const matchedSource = input.userInput.match(/([a-zA-Z0-9_\-\u4e00-\u9fa5]+\.(csv|xlsx))/i)?.[1];
+        const wsCandidate = input.workspaceFiles?.find((f) => f.endsWith('.csv') || f.endsWith('.xlsx'));
+        const source = matchedSource || wsCandidate || (input.workspaceFiles?.[0] ?? 'sales.csv');
+        const matchedTarget = input.userInput.match(/([a-zA-Z0-9_\-\u4e00-\u9fa5]+\.xlsx)/i)?.[1];
+        const target = matchedTarget || 'sales-summary.xlsx';
+        stepArgs = { source, target };
+        targetArtifact = target;
       } else if (
         text.includes('script') ||
         text.includes('脚本') ||
@@ -101,6 +110,7 @@ export class DeterministicModelProvider implements ModelProvider {
         toolName = 'workspace.execute_script';
         risk = 'write';
         requiresApproval = true;
+        stepArgs = { language: 'node', script: 'console.log("计算完成");' };
       } else if (
         text.includes('读取') ||
         text.includes('read') ||
@@ -110,11 +120,18 @@ export class DeterministicModelProvider implements ModelProvider {
         toolName = 'workspace.read_file';
         risk = 'read';
         requiresApproval = false;
+        const matchedSource = input.userInput.match(/([a-zA-Z0-9_\-\u4e00-\u9fa5]+\.[a-zA-Z0-9]+)/i)?.[1];
+        const source = matchedSource || input.workspaceFiles?.[0] || 'README.md';
+        stepArgs = { path: source };
       } else {
         title = '整理会议材料并生成周报';
         toolName = 'workspace.write_report';
         risk = 'write';
         requiresApproval = true;
+        const matchedTarget = input.userInput.match(/([a-zA-Z0-9_\-\u4e00-\u9fa5]+\.docx)/i)?.[1];
+        const target = matchedTarget || 'weekly-meeting-report.docx';
+        stepArgs = { target, title: 'Weekly Meeting Report' };
+        targetArtifact = target;
       }
     }
 
@@ -124,6 +141,8 @@ export class DeterministicModelProvider implements ModelProvider {
       toolName,
       risk,
       requiresApproval,
+      ...(stepArgs ? { arguments: stepArgs } : {}),
+      ...(targetArtifact ? { targetArtifact } : {}),
     };
     return {
       id: `plan-${input.turnId}`,
@@ -186,20 +205,26 @@ export class DeterministicModelProvider implements ModelProvider {
       ) {
         const matchedSource = lastUserMsg?.content.match(/([a-zA-Z0-9_\-\u4e00-\u9fa5]+\.(csv|xlsx))/i)?.[1];
         const wsTableCandidate = input.workspaceFiles?.find((f) => f.endsWith('.csv') || f.endsWith('.xlsx'));
-        const sourceFile = matchedSource || wsTableCandidate || 'sales.csv';
-        const matchedTarget = lastUserMsg?.content.match(/([a-zA-Z0-9_\-\u4e00-\u9fa5]+\.xlsx)/i)?.[1];
-        const targetFile = matchedTarget || 'sales-summary.xlsx';
+        if (!matchedSource && !wsTableCandidate && (!input.workspaceFiles || input.workspaceFiles.length === 0)) {
+          output = {
+            content: '检测到表格处理需求，但在当前工作区未发现表格文件。请在工作区提供 CSV 或 Excel 文件，或直接输入文件相对路径。',
+          };
+        } else {
+          const sourceFile = matchedSource || wsTableCandidate || input.workspaceFiles?.[0] || 'sales.csv';
+          const matchedTarget = lastUserMsg?.content.match(/([a-zA-Z0-9_\-\u4e00-\u9fa5]+\.xlsx)/i)?.[1];
+          const targetFile = matchedTarget || 'sales-summary.xlsx';
 
-        output = {
-          content: `正在为您分析并汇总表格数据，即将调用 Excel 引擎处理 ${sourceFile} 并生成 ${targetFile}。`,
-          toolCalls: [
-            {
-              id: this.createId('tool-call'),
-              name: 'office.process_excel',
-              arguments: { source: sourceFile, target: targetFile },
-            },
-          ],
-        };
+          output = {
+            content: `正在为您分析并汇总表格数据，即将调用 Excel 引擎处理 ${sourceFile} 并生成 ${targetFile}。`,
+            toolCalls: [
+              {
+                id: this.createId('tool-call'),
+                name: 'office.process_excel',
+                arguments: { source: sourceFile, target: targetFile },
+              },
+            ],
+          };
+        }
       } else if (
         text.includes('word') ||
         text.includes('周报') ||
@@ -209,20 +234,26 @@ export class DeterministicModelProvider implements ModelProvider {
       ) {
         const matchedSource = lastUserMsg?.content.match(/([a-zA-Z0-9_\-\u4e00-\u9fa5]+\.(md|txt))/i)?.[1];
         const wsDocCandidate = input.workspaceFiles?.find((f) => f.endsWith('.md') || f.endsWith('.txt'));
-        const sourceFile = matchedSource || wsDocCandidate || 'meeting-notes.md';
-        const matchedTarget = lastUserMsg?.content.match(/([a-zA-Z0-9_\-\u4e00-\u9fa5]+\.docx)/i)?.[1];
-        const targetFile = matchedTarget || 'weekly-meeting-report.docx';
+        if (!matchedSource && !wsDocCandidate && (!input.workspaceFiles || input.workspaceFiles.length === 0)) {
+          output = {
+            content: '检测到报告生成需求，但在当前工作区未找到参考材料。请在工作区放置会议纪要或文档（.md/.txt），或指定输入文件。',
+          };
+        } else {
+          const sourceFile = matchedSource || wsDocCandidate || input.workspaceFiles?.[0] || 'meeting-notes.md';
+          const matchedTarget = lastUserMsg?.content.match(/([a-zA-Z0-9_\-\u4e00-\u9fa5]+\.docx)/i)?.[1];
+          const targetFile = matchedTarget || 'weekly-meeting-report.docx';
 
-        output = {
-          content: `正在为您整理参考材料，即将调用 Word 引擎处理 ${sourceFile} 生成报告 ${targetFile}。`,
-          toolCalls: [
-            {
-              id: this.createId('tool-call'),
-              name: 'office.generate_word_report',
-              arguments: { source: sourceFile, target: targetFile },
-            },
-          ],
-        };
+          output = {
+            content: `正在为您整理参考材料，即将调用 Word 引擎处理 ${sourceFile} 生成报告 ${targetFile}。`,
+            toolCalls: [
+              {
+                id: this.createId('tool-call'),
+                name: 'office.generate_word_report',
+                arguments: { source: sourceFile, target: targetFile },
+              },
+            ],
+          };
+        }
       } else {
         output = {
           content: `收到您的输入："${lastUserMsg?.content ?? ''}"。我已经准备好为您处理本地工作区文件，您可以让我读取 CSV/Excel 表格、生成 Word 报告或清洗分析数据。`,
