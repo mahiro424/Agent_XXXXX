@@ -228,4 +228,34 @@ describe('ToolRegistry 与命令模式插件架构 (Tool Architecture)', () => {
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it('数据真实性治理：杜绝假数据回退与盲目写死默认文件', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'agent-truth-test-'));
+    try {
+      const { context, sandbox } = createTestContext(tempDir);
+      const registry = createDefaultToolRegistry();
+
+      // 1. read_file 未传 path 且工作区无文件时，明确报错并不回退到 sales.csv
+      const readRes = await registry.execute('workspace.read_file', {}, context);
+      expect(readRes).toContain('[调用错误]');
+      expect(readRes).toContain('请指定待读取的文件相对路径');
+
+      // 2. process_excel 在空工作区中执行，明确报错并拒绝伪造 Maya/Leo 数据
+      const excelEmptyRes = await registry.execute('office.process_excel', {}, context);
+      expect(excelEmptyRes).toContain('[执行失败]');
+      expect(excelEmptyRes).toContain('未找到任何 CSV 或 XLSX 数据源表格');
+
+      // 3. 写入自定义文件名 custom-kpi.csv 并处理，验证不会要求或依赖 sales.csv
+      sandbox.writeWorkspaceFile('custom-kpi.csv', 'name,kpi\nAlice,95\nBob,88\n');
+      const customExcelRes = await registry.execute(
+        'office.process_excel',
+        { source: 'custom-kpi.csv', target: 'kpi-summary.xlsx' },
+        context,
+      );
+      expect(customExcelRes).toContain('kpi-summary.xlsx');
+      expect(existsSync(join(sandbox.artifactsDir, 'kpi-summary.xlsx'))).toBe(true);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });

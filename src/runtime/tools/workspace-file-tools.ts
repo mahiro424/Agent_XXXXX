@@ -27,7 +27,11 @@ export class ReadFileToolHandler implements IToolHandler {
     context: ToolContext,
   ): string {
     const target =
-      (args.path as string) || (args.file as string) || (args.source as string) || 'sales.csv';
+      (args.path as string) || (args.file as string) || (args.source as string);
+    if (!target) {
+      const allFiles = context.sandbox.listFiles();
+      return `[调用错误] 请指定待读取的文件相对路径 (path)。当前工作区可用文件: ${allFiles.length > 0 ? allFiles.join(', ') : '（暂无文件）'}`;
+    }
     if (context.sandbox.hasFile(target)) {
       return context.sandbox.readFile(target);
     }

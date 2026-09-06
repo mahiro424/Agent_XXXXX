@@ -1,3 +1,6 @@
+import { existsSync, readdirSync } from 'node:fs';
+import { basename } from 'node:path';
+import { createHash } from 'node:crypto';
 import type { AppServerContract } from '../runtime/app-server.js';
 import type {
   AttachmentItem,
@@ -23,6 +26,19 @@ export const DEMO_QUICK_TASKS = [
   '读取销售数据并生成周报',
 ] as const;
 
+/**
+ * 根据工作区物理根路径计算出稳定且隔离的 workspaceId
+ */
+export function computeWorkspaceId(folderPath?: string): string {
+  if (!folderPath) {
+    return 'ws-default';
+  }
+  const normalized = folderPath.replace(/\\/g, '/').replace(/\/+$/, '');
+  const base = basename(normalized).replace(/[^a-zA-Z0-9_\-\u4e00-\u9fa5]/g, '_') || 'workspace';
+  const hash = createHash('md5').update(normalized.toLowerCase()).digest('hex').slice(0, 8);
+  return `ws-${base}-${hash}`;
+}
+
 export interface DemoHomeView {
   readonly pageId: 'demo-home';
   readonly state: DemoHomeState;
@@ -30,7 +46,7 @@ export interface DemoHomeView {
   readonly workspaceRoot?: string;
   readonly modelMode: DemoModelMode;
   readonly permissionMode: FilePermissionMode;
-  readonly quickTasks: typeof DEMO_QUICK_TASKS;
+  readonly quickTasks: readonly string[];
   readonly canSubmit: boolean;
   readonly submitLabel: string;
   readonly disabledReason?: string;
@@ -57,7 +73,7 @@ export interface DemoHomeOptions {
 
 export class DemoHomeController {
   private readonly server: AppServerContract;
-  private readonly workspaceId: string;
+  private workspaceId: string;
   private readonly liveModelAvailable: boolean;
   private taskInput = '';
   private workspaceRoot: string | undefined;
@@ -68,10 +84,11 @@ export class DemoHomeController {
   private tokenSnapshot?: TokenUsageSnapshot;
   private isCompacting = false;
   private loading = false;
+  private workspaceFiles: string[] = [];
 
   public constructor(options: DemoHomeOptions) {
     this.server = options.server;
-    this.workspaceId = options.workspaceId ?? 'desktop-workspace';
+    this.workspaceId = options.workspaceId ?? computeWorkspaceId(options.workspaceId);
     this.liveModelAvailable = options.liveModelAvailable ?? true;
     this.permissionMode = options.permissionMode ?? 'full-access';
     this.reasoningEffort = options.reasoningEffort ?? 'max';
@@ -111,15 +128,73 @@ export class DemoHomeController {
     this.isCompacting = isCompacting;
   }
 
+  public setWorkspaceFiles(files: readonly string[]): void {
+    this.workspaceFiles = [...files];
+  }
+
+  public getQuickTasks(): readonly string[] {
+    const files = this.workspaceFiles;
+    const tasks: string[] = [];
+
+    const tableFiles = files.filter((f) => f.endsWith('.csv') || f.endsWith('.xlsx'));
+    const docFiles = files.filter((f) => f.endsWith('.md') || f.endsWith('.txt'));
+    const scriptFiles = files.filter((f) => f.endsWith('.py') || f.endsWith('.js') || f.endsWith('.ts'));
+
+    if (tableFiles.length > 0) {
+      const firstTable = tableFiles[0];
+      tasks.push(`汇总 ${firstTable} 数据并生成带公式的 Excel 报表`);
+    }
+
+    if (docFiles.length > 0) {
+      const firstDoc = docFiles[0];
+      tasks.push(`基于 ${firstDoc} 提炼要点并生成高保真 Word 报告`);
+    }
+
+    if (scriptFiles.length > 0) {
+      tasks.push('运行沙箱脚本分析工作区代码与数据');
+    }
+
+    const fallbackTasks = [
+      '整理工作区会议材料并生成精美 Word 周报',
+      '汇总工作区业务表格并输出高保真 Excel 工作簿',
+      '在安全沙箱中运行脚本进行数据清洗与计算',
+    ];
+
+    for (const fb of fallbackTasks) {
+      if (tasks.length >= 3) break;
+      if (!tasks.includes(fb)) {
+        tasks.push(fb);
+      }
+    }
+
+    return tasks;
+  }
+
   public chooseQuickTask(task: string): void {
-    if (!DEMO_QUICK_TASKS.includes(task as (typeof DEMO_QUICK_TASKS)[number])) {
+    const currentTasks = this.getQuickTasks();
+    if (!currentTasks.includes(task) && !DEMO_QUICK_TASKS.includes(task as (typeof DEMO_QUICK_TASKS)[number])) {
       throw new Error(`unknown quick task: ${task}`);
     }
     this.taskInput = task;
   }
 
-  public selectWorkspace(workspaceRoot: string): void {
+  public selectWorkspace(workspaceRoot: string, files?: readonly string[]): void {
     this.workspaceRoot = workspaceRoot;
+    this.workspaceId = computeWorkspaceId(workspaceRoot);
+    if (files) {
+      this.workspaceFiles = [...files];
+    } else {
+      try {
+        if (existsSync(workspaceRoot)) {
+          const entries = readdirSync(workspaceRoot, { withFileTypes: true });
+          this.workspaceFiles = entries.filter((e) => e.isFile()).map((e) => e.name);
+        } else {
+          this.workspaceFiles = [];
+        }
+      } catch {
+        this.workspaceFiles = [];
+      }
+    }
   }
 
   public setModelMode(mode: DemoModelMode): void {
@@ -139,7 +214,7 @@ export class DemoHomeController {
       taskInput: this.taskInput,
       modelMode: this.modelMode,
       permissionMode: this.permissionMode,
-      quickTasks: DEMO_QUICK_TASKS,
+      quickTasks: this.getQuickTasks(),
       canSubmit: state === 'default',
       submitLabel: state === 'loading' ? '正在生成方案…' : '生成方案',
       attachments: [...this.attachments],

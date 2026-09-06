@@ -18,7 +18,7 @@ import type {
 import type { AgentSkill } from '../runtime/skill.js';
 import { AppShellController } from '../ui/app-shell.js';
 import type { AppRoute, AppShellView, ShellModelMode } from '../ui/app-shell.js';
-import { DemoHomeController } from '../ui/demo-home.js';
+import { DemoHomeController, computeWorkspaceId } from '../ui/demo-home.js';
 import type { DemoHomeView, DemoModelMode, FilePermissionMode } from '../ui/demo-home.js';
 import { DeterministicModelProvider, OpenAICompatibleModelProvider } from '../runtime/model-provider.js';
 import { AttachmentReader } from '../runtime/attachment-reader.js';
@@ -323,7 +323,7 @@ export class DesktopSession {
     });
     this.home = new DemoHomeController({
       server: this.server,
-      workspaceId: 'desktop-workspace',
+      workspaceId: computeWorkspaceId(),
       liveModelAvailable: isLiveAvailable,
       permissionMode: this.permissionMode,
     });
@@ -429,7 +429,7 @@ export class DesktopSession {
         mkdirSync(workspaceRoot, { recursive: true });
       }
       const thread = this.server.createThread({
-        workspaceId: 'desktop-workspace',
+        workspaceId: computeWorkspaceId(workspaceRoot),
         workspaceRoot,
       });
       this.activeThreadId = thread.id;
@@ -651,7 +651,7 @@ export class DesktopSession {
     }
 
     const thread = this.server.createThread({
-      workspaceId: 'desktop-workspace',
+      workspaceId: computeWorkspaceId(workspaceRoot),
       workspaceRoot,
     });
 

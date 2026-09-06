@@ -17,6 +17,7 @@ export interface VerificationRequest {
   readonly optionalText?: readonly string[];
   readonly requireDocxStructure?: boolean;
   readonly requireXlsxStructure?: boolean;
+  readonly requireJsonStructure?: boolean;
   readonly reconciliationRequired?: boolean;
 }
 
@@ -159,6 +160,18 @@ export class EvidenceVerifier {
       });
     }
 
+    if (request.requireJsonStructure || request.artifactPath.toLowerCase().endsWith('.json')) {
+      const structured = hasJsonStructure(secondRead);
+      checks.push({
+        name: 'json_structure',
+        required: true,
+        status: structured ? 'passed' : 'failed',
+        detail: structured
+          ? 'json syntax is valid and parseable'
+          : 'json syntax is invalid or unparseable',
+      });
+    }
+
     if (request.reconciliationRequired) {
       checks.push({
         name: 'reconciliation_gate',
@@ -254,3 +267,13 @@ function hasXlsxStructure(buffer: Buffer): boolean {
     packageText.includes('xl/workbook.xml')
   );
 }
+
+function hasJsonStructure(buffer: Buffer): boolean {
+  try {
+    JSON.parse(buffer.toString('utf8'));
+    return true;
+  } catch {
+    return false;
+  }
+}
+

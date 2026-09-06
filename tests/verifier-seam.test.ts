@@ -112,4 +112,32 @@ describe('EvidenceVerifier', () => {
     );
     expect(result.summary).toContain('uncertain side effect');
   });
+
+  it('verifies valid json structure when requested or targeting .json file', () => {
+    const root = workspace();
+    const artifactPath = join(root, 'data.json');
+    writeFileSync(artifactPath, JSON.stringify({ name: 'Agent', count: 42, nested: { ok: true } }), 'utf8');
+
+    const result = new EvidenceVerifier().verify({
+      artifactPath,
+      requireJsonStructure: true,
+    });
+
+    expect(result.status).toBe('VERIFIED');
+    expect(result.checks.find((check) => check.name === 'json_structure')?.status).toBe('passed');
+  });
+
+  it('fails verification when json structure is invalid or corrupt', () => {
+    const root = workspace();
+    const artifactPath = join(root, 'broken.json');
+    writeFileSync(artifactPath, '{ name: "Agent", count: ', 'utf8');
+
+    const result = new EvidenceVerifier().verify({
+      artifactPath,
+    });
+
+    expect(result.status).toBe('FAILED');
+    expect(result.checks.find((check) => check.name === 'json_structure')?.status).toBe('failed');
+    expect(result.summary).toBe('one or more required evidence checks failed');
+  });
 });

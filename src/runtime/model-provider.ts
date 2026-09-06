@@ -139,13 +139,19 @@ export class DeterministicModelProvider implements ModelProvider {
         text.includes('表格') ||
         text.includes('汇总')
       ) {
+        const matchedSource = lastUserMsg?.content.match(/([a-zA-Z0-9_\-\u4e00-\u9fa5]+\.(csv|xlsx))/i)?.[1];
+        const wsTableCandidate = input.workspaceFiles?.find((f) => f.endsWith('.csv') || f.endsWith('.xlsx'));
+        const sourceFile = matchedSource || wsTableCandidate || 'sales.csv';
+        const matchedTarget = lastUserMsg?.content.match(/([a-zA-Z0-9_\-\u4e00-\u9fa5]+\.xlsx)/i)?.[1];
+        const targetFile = matchedTarget || 'sales-summary.xlsx';
+
         output = {
-          content: '正在为您分析并汇总销售数据，即将调用 Excel 引擎生成汇总表格。',
+          content: `正在为您分析并汇总表格数据，即将调用 Excel 引擎处理 ${sourceFile} 并生成 ${targetFile}。`,
           toolCalls: [
             {
               id: this.createId('tool-call'),
               name: 'office.process_excel',
-              arguments: { source: 'sales.csv', target: 'sales-summary.xlsx' },
+              arguments: { source: sourceFile, target: targetFile },
             },
           ],
         };
@@ -156,13 +162,19 @@ export class DeterministicModelProvider implements ModelProvider {
         text.includes('会议') ||
         text.includes('meeting')
       ) {
+        const matchedSource = lastUserMsg?.content.match(/([a-zA-Z0-9_\-\u4e00-\u9fa5]+\.(md|txt))/i)?.[1];
+        const wsDocCandidate = input.workspaceFiles?.find((f) => f.endsWith('.md') || f.endsWith('.txt'));
+        const sourceFile = matchedSource || wsDocCandidate || 'meeting-notes.md';
+        const matchedTarget = lastUserMsg?.content.match(/([a-zA-Z0-9_\-\u4e00-\u9fa5]+\.docx)/i)?.[1];
+        const targetFile = matchedTarget || 'weekly-meeting-report.docx';
+
         output = {
-          content: '正在为您整理会议纪要，即将调用 Word 引擎生成结构化周报。',
+          content: `正在为您整理参考材料，即将调用 Word 引擎处理 ${sourceFile} 生成报告 ${targetFile}。`,
           toolCalls: [
             {
               id: this.createId('tool-call'),
               name: 'office.generate_word_report',
-              arguments: { source: 'meeting-notes.md', target: 'weekly-meeting-report.docx' },
+              arguments: { source: sourceFile, target: targetFile },
             },
           ],
         };

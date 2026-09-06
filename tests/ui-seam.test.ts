@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AppServer } from '../src/runtime/app-server.js';
 import { AppShellController } from '../src/ui/app-shell.js';
-import { DemoHomeController } from '../src/ui/demo-home.js';
+import { DemoHomeController, computeWorkspaceId } from '../src/ui/demo-home.js';
 import {
   renderAppShell,
   renderDemoHome,
@@ -200,5 +200,23 @@ describe('demo-home UI contract', () => {
     expect(plan).toContain('&lt;读取材料&gt;');
     expect(timeline).toContain('data-event-type="approval.requested"');
     expect(timeline).toContain('&lt;safe&gt;');
+  });
+
+  describe('computeWorkspaceId', () => {
+    it('returns default fallback when folder path is not provided', () => {
+      expect(computeWorkspaceId()).toBe('ws-default');
+      expect(computeWorkspaceId('')).toBe('ws-default');
+    });
+
+    it('generates consistent and isolated workspace ids based on folder path', () => {
+      const id1 = computeWorkspaceId('E:/Agent/project-a');
+      const id2 = computeWorkspaceId('E:/Agent/project-b');
+      const id1Again = computeWorkspaceId('E:\\Agent\\project-a\\');
+
+      expect(id1).toMatch(/^ws-project-a-[a-f0-9]{8}$/);
+      expect(id2).toMatch(/^ws-project-b-[a-f0-9]{8}$/);
+      expect(id1).not.toBe(id2);
+      expect(id1).toBe(id1Again);
+    });
   });
 });

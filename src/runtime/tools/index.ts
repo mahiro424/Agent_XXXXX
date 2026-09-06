@@ -6,7 +6,11 @@ import {
   WriteArtifactToolHandler,
   WriteFileToolHandler,
 } from './workspace-file-tools.js';
-import { GenerateWordReportToolHandler, ProcessExcelToolHandler } from './office-tools.js';
+import {
+  GenerateWordReportToolHandler,
+  ProcessExcelToolHandler,
+  WorkspaceReportToolHandler,
+} from './office-tools.js';
 import { ExecuteScriptToolHandler, RunCommandToolHandler } from './script-tools.js';
 import { McpToolAdapter } from './mcp-tool-adapter.js';
 
@@ -33,6 +37,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // 2. Office 与文档工具
   registry.register(new ProcessExcelToolHandler());
   registry.register(new GenerateWordReportToolHandler());
+  registry.register(new WorkspaceReportToolHandler());
 
   // 3. 终端命令与代码执行沙箱工具
   registry.register(new RunCommandToolHandler());

@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { DefaultApprovalPolicy } from '../src/runtime/approval-policy.js';
 import { DemoHomeController } from '../src/ui/demo-home.js';
 import { AppServer } from '../src/runtime/app-server.js';
@@ -101,48 +104,58 @@ describe('Composer Enhancements (EvoX-inspired)', () => {
 
   describe('DesktopSession & Context Compaction', () => {
     it('supports attachments and serializes them into input prompt', async () => {
-      const session = new DesktopSession({ server: new AppServer() });
-      session.selectWorkspace('E:/Agent');
-      session.addAttachment({
-        id: 'att-test',
-        name: 'report.docx',
-        path: 'E:/Agent/report.docx',
-        size: 4096,
-        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      });
+      const tempDir = mkdtempSync(join(tmpdir(), 'agent-att-test-'));
+      try {
+        const session = new DesktopSession({ server: new AppServer() });
+        await session.selectWorkspace(tempDir);
+        session.addAttachment({
+          id: 'att-test',
+          name: 'report.docx',
+          path: join(tempDir, 'report.docx'),
+          size: 4096,
+          type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        });
 
-      const snapshot = session.snapshot();
-      expect(snapshot.home.attachments).toHaveLength(1);
+        const snapshot = session.snapshot();
+        expect(snapshot.home.attachments).toHaveLength(1);
 
-      // Session sendMessage serializes attachments into prompt and clears attachments
-      await session.sendMessage('请分析这份报告');
-      const messages = session.snapshot().messages ?? [];
-      const userMsg = messages.find((m) => m.role === 'user');
-      expect(userMsg).toBeDefined();
-      expect(userMsg?.content).toContain('请分析这份报告');
-      expect(userMsg?.content).toContain('<attachments>');
-      expect(userMsg?.content).toContain('report.docx');
-      expect(userMsg?.content).toContain('</attachments>');
+        // Session sendMessage serializes attachments into prompt and clears attachments
+        await session.sendMessage('请分析这份报告');
+        const messages = session.snapshot().messages ?? [];
+        const userMsg = messages.find((m) => m.role === 'user');
+        expect(userMsg).toBeDefined();
+        expect(userMsg?.content).toContain('请分析这份报告');
+        expect(userMsg?.content).toContain('<attachments>');
+        expect(userMsg?.content).toContain('report.docx');
+        expect(userMsg?.content).toContain('</attachments>');
 
-      // Attachments should be cleared for subsequent input
-      expect(session.snapshot().home.attachments).toHaveLength(0);
+        // Attachments should be cleared for subsequent input
+        expect(session.snapshot().home.attachments).toHaveLength(0);
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
     });
 
     it('intercepts /compact slash command and triggers compaction', async () => {
-      const session = new DesktopSession({ server: new AppServer() });
-      session.selectWorkspace('E:/Agent');
-      await session.sendMessage('初始任务');
+      const tempDir = mkdtempSync(join(tmpdir(), 'agent-compact-test-'));
+      try {
+        const session = new DesktopSession({ server: new AppServer() });
+        await session.selectWorkspace(tempDir);
+        await session.sendMessage('初始任务');
 
-      // Type /compact command
-      const afterCompact = await session.sendMessage('/compact');
-      expect(afterCompact.home.isCompacting).toBe(false);
+        // Type /compact command
+        const afterCompact = await session.sendMessage('/compact');
+        expect(afterCompact.home.isCompacting).toBe(false);
 
-      const messagesAfter = session.snapshot().messages ?? [];
-      expect(messagesAfter.some((m) => m.content.includes('[系统上下文整理与记忆压缩]'))).toBe(true);
+        const messagesAfter = session.snapshot().messages ?? [];
+        expect(messagesAfter.some((m) => m.content.includes('[系统上下文整理与记忆压缩]'))).toBe(true);
 
-      const tokenSnap = session.computeTokenSnapshot();
-      expect(tokenSnap.usedTokens).toBeGreaterThan(0);
-      expect(tokenSnap.contextWindow).toBe(128000);
+        const tokenSnap = session.computeTokenSnapshot();
+        expect(tokenSnap.usedTokens).toBeGreaterThan(0);
+        expect(tokenSnap.contextWindow).toBe(128000);
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
     });
 
     it('formats token counters properly', () => {
