@@ -25,6 +25,14 @@ export interface SettingsModalState {
     readonly latencyMs?: number | undefined;
     readonly error?: string | undefined;
   } | null;
+  readonly isFetchingModels?: boolean | undefined;
+  readonly fetchedModels?: readonly string[] | undefined;
+  readonly fetchModelsFeedback?: {
+    readonly success?: boolean | undefined;
+    readonly latencyMs?: number | undefined;
+    readonly count?: number | undefined;
+    readonly error?: string | undefined;
+  } | null | undefined;
   readonly toast?: {
     readonly message: string;
     readonly type: 'success' | 'error';
@@ -717,12 +725,56 @@ function renderAddServiceModal(settings: AgentSettings, state: SettingsModalStat
     )
     .join('');
 
-  const nameVal = targetService?.name ?? (isThirdParty ? '第三方中转 (OneAPI/NewAPI)' : 'DeepSeek V4 Pro (推荐)');
+  const nameVal = targetService?.name ?? (isThirdParty ? '第三方中转 (OneAPI/NewAPI)' : 'DeepSeek (官方)');
   const providerTypeVal = targetService?.providerType ?? (isThirdParty ? 'openai' : 'deepseek');
   const baseUrlVal = targetService?.baseURL ?? (isThirdParty ? 'https://api.your-relay.com/v1' : 'https://api.deepseek.com');
-  const modelNameVal = targetService?.modelName ?? 'deepseek-v4-pro';
+  const modelNameVal = targetService?.modelName ?? (isThirdParty ? '' : 'deepseek-chat');
   const apiKeyVal = targetService?.apiKey ?? '';
   const reasoningVal = targetService?.reasoningEffort ?? (isThirdParty ? 'medium' : 'high');
+
+  const candidateModels: string[] = Array.from(
+    new Set([
+      ...(state.fetchedModels ?? []),
+      ...(targetService?.availableModels ?? []),
+    ]),
+  );
+
+  let fetchFeedbackInline = '';
+  if (state.isFetchingModels) {
+    fetchFeedbackInline = `<span class="test-inline-msg info">⏳ 正在从端点拉取模型列表...</span>`;
+  } else if (state.fetchModelsFeedback) {
+    if (state.fetchModelsFeedback.success) {
+      fetchFeedbackInline = `<span class="test-inline-msg success">✅ 成功拉取到 ${state.fetchModelsFeedback.count ?? candidateModels.length} 个可用模型</span>`;
+    } else {
+      fetchFeedbackInline = `<span class="test-inline-msg error" title="${escapeHtml(state.fetchModelsFeedback.error ?? '')}">❌ 获取模型失败: ${escapeHtml(state.fetchModelsFeedback.error ?? '无法建立连接')}</span>`;
+    }
+  }
+
+  let modelSelectorHtml = '';
+  if (candidateModels.length > 0) {
+    const isCustom = !candidateModels.includes(modelNameVal) && Boolean(modelNameVal);
+    const optionsHtml = candidateModels
+      .map(
+        (m) => `<option value="${escapeHtml(m)}" ${m === modelNameVal ? 'selected' : ''}>${escapeHtml(m)}</option>`,
+      )
+      .join('');
+
+    modelSelectorHtml = `
+      <div class="model-select-group">
+        <select class="form-select font-mono" id="form-service-model-select">
+          ${optionsHtml}
+          <option value="__custom__" ${isCustom ? 'selected' : ''}>✍️ 自定义输入其他模型...</option>
+        </select>
+        <input type="text" class="form-input font-mono" id="form-service-model" value="${escapeHtml(modelNameVal)}" placeholder="输入或选择模型标识符" style="${isCustom ? 'margin-top: 6px;' : 'display: none;'}" required />
+      </div>
+    `;
+  } else {
+    modelSelectorHtml = `
+      <div class="model-select-group">
+        <input type="text" class="form-input font-mono" id="form-service-model" value="${escapeHtml(modelNameVal)}" placeholder="点击右上角【🔄 获取可用模型】自动拉取或手动输入" required />
+      </div>
+    `;
+  }
 
   let testResultInline = '';
   if (state.testFeedback) {
@@ -805,8 +857,14 @@ function renderAddServiceModal(settings: AgentSettings, state: SettingsModalStat
 
           <div class="form-row">
             <div class="form-group flex-1">
-              <label class="form-label" for="form-service-model">默认模型名称 (Model Identifier)</label>
-              <input type="text" class="form-input font-mono" id="form-service-model" value="${escapeHtml(modelNameVal)}" placeholder="deepseek-v4-pro" required />
+              <div class="form-label-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <label class="form-label" for="form-service-model" style="margin-bottom: 0;">生效模型 (Model Identifier)</label>
+                <button type="button" class="btn-subtle" data-action="fetch-service-models" style="font-size: 11px; padding: 2px 8px; height: 24px;" ${state.isFetchingModels ? 'disabled' : ''}>
+                  ${state.isFetchingModels ? '正在获取...' : '🔄 获取可用模型'}
+                </button>
+              </div>
+              ${modelSelectorHtml}
+              ${fetchFeedbackInline ? `<div style="margin-top: 4px;">${fetchFeedbackInline}</div>` : ''}
             </div>
             <div class="form-group w-140">
               <label class="form-label" for="form-service-reasoning">思考推理强度</label>

@@ -40,16 +40,17 @@ describe('SettingsStore 数据模型与持久化测试', () => {
     expect(settings.enablePowershellExecution).toBe(true);
     expect(settings.maxHistoryRounds).toBe(20);
 
-    // 验证前沿模型预设：包含 deepseek-v4-pro、gpt-5.4、claude-sonnet-4-6
+    // 验证前沿模型预设：包含 deepseek-chat、gpt-4o、claude-3-5-sonnet-latest
     const deepseekService = settings.services.find((s) => s.id === 'deepseek-official');
-    expect(deepseekService?.modelName).toBe('deepseek-v4-pro');
+    expect(deepseekService?.modelName).toBe('deepseek-chat');
     expect(deepseekService?.baseURL).toBe('https://api.deepseek.com');
+    expect(deepseekService?.availableModels).toContain('deepseek-chat');
 
     const openaiService = settings.services.find((s) => s.id === 'openai-compatible');
-    expect(openaiService?.modelName).toBe('gpt-5.4');
+    expect(openaiService?.modelName).toBe('gpt-4o');
 
     const claudeService = settings.services.find((s) => s.id === 'anthropic-claude');
-    expect(claudeService?.modelName).toBe('claude-sonnet-4-6');
+    expect(claudeService?.modelName).toBe('claude-3-5-sonnet-latest');
 
     // 验证文件已被写入磁盘
     expect(existsSync(configPath)).toBe(true);
@@ -366,8 +367,8 @@ describe('SettingsModal UI 渲染测试', () => {
     const session = new DesktopSession({ configPath });
 
     const initial = session.snapshot();
-    expect(initial.activeServiceName).toBe('DeepSeek V4 Pro (推荐)');
-    expect(initial.activeModelName).toBe('deepseek-v4-pro');
+    expect(initial.activeServiceName).toBe('DeepSeek (官方)');
+    expect(initial.activeModelName).toBe('deepseek-chat');
 
     const updated = await session.saveSettings({
       permissionPolicy: 'risk-gated',
@@ -377,8 +378,8 @@ describe('SettingsModal UI 渲染测试', () => {
     });
 
     expect(updated.permissionMode).toBe('risk-gated');
-    expect(updated.activeServiceName).toBe('OpenAI GPT-5.4 (通用网关)');
-    expect(updated.activeModelName).toBe('gpt-5.4');
+    expect(updated.activeServiceName).toBe('OpenAI (官方 / 兼容网关)');
+    expect(updated.activeModelName).toBe('gpt-4o');
 
     const store = new SettingsStore(configPath);
     expect(store.load().permissionPolicy).toBe('risk-gated');
@@ -518,5 +519,59 @@ await server.connect(transport);
     expect(html).toContain('mcp-server-form');
     expect(html).toContain('data-action="apply-mcp-preset"');
     expect(html).toContain('data-action="submit-mcp-form"');
+  });
+
+  it('能够通过标准 /models 端点动态拉取并解析可用模型列表', async () => {
+    const dir = createTempDir();
+    const configPath = join(dir, 'settings.json');
+
+    const mockModelsFetch: typeof fetch = async (url) => {
+      expect(String(url)).toContain('/models');
+      return new Response(
+        JSON.stringify({
+          object: 'list',
+          data: [
+            { id: 'deepseek-chat', object: 'model', owned_by: 'deepseek' },
+            { id: 'deepseek-reasoner', object: 'model', owned_by: 'deepseek' },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
+    };
+
+    const store = new SettingsStore(configPath, mockModelsFetch);
+    const result = await store.fetchModels({
+      baseURL: 'https://api.deepseek.com',
+      apiKey: 'sk-test-ds',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.models).toEqual(['deepseek-chat', 'deepseek-reasoner']);
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('拉取模型遇到鉴权失败或网络错误时返回友好提示', async () => {
+    const dir = createTempDir();
+    const configPath = join(dir, 'settings.json');
+
+    const mockFailFetch: typeof fetch = async () => {
+      return new Response(JSON.stringify({ error: { message: 'Authentication required' } }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    };
+
+    const store = new SettingsStore(configPath, mockFailFetch);
+    const result = await store.fetchModels({
+      baseURL: 'https://api.deepseek.com',
+      apiKey: 'invalid-key',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.models).toEqual([]);
+    expect(result.error).toContain('Authentication required');
   });
 });

@@ -416,24 +416,63 @@ root.addEventListener('click', (event) => {
         return;
       }
       case 'open-add-service': {
-        settingsState = { ...settingsState, isAddServiceOpen: true, isAddThirdParty: false, initialPresetId: 'deepseek', editingServiceId: null, testFeedback: null };
+        settingsState = {
+          ...settingsState,
+          isAddServiceOpen: true,
+          isAddThirdParty: false,
+          initialPresetId: 'deepseek',
+          editingServiceId: null,
+          isFetchingModels: false,
+          fetchedModels: ['deepseek-chat', 'deepseek-reasoner'],
+          fetchModelsFeedback: null,
+          testFeedback: null,
+        };
         renderSettings();
         return;
       }
       case 'open-add-thirdparty': {
-        settingsState = { ...settingsState, isAddServiceOpen: true, isAddThirdParty: true, initialPresetId: 'custom-relay', editingServiceId: null, testFeedback: null };
+        settingsState = {
+          ...settingsState,
+          isAddServiceOpen: true,
+          isAddThirdParty: true,
+          initialPresetId: 'custom-relay',
+          editingServiceId: null,
+          isFetchingModels: false,
+          fetchedModels: [],
+          fetchModelsFeedback: null,
+          testFeedback: null,
+        };
         renderSettings();
         return;
       }
       case 'close-add-service': {
-        settingsState = { ...settingsState, isAddServiceOpen: false, isAddThirdParty: false, editingServiceId: null, testFeedback: null };
+        settingsState = {
+          ...settingsState,
+          isAddServiceOpen: false,
+          isAddThirdParty: false,
+          editingServiceId: null,
+          isFetchingModels: false,
+          fetchedModels: undefined,
+          fetchModelsFeedback: null,
+          testFeedback: null,
+        };
         renderSettings();
         return;
       }
       case 'edit-service': {
         const serviceId = button.dataset.serviceId;
         if (serviceId) {
-          settingsState = { ...settingsState, isAddServiceOpen: true, isAddThirdParty: false, editingServiceId: serviceId, testFeedback: null };
+          const targetService = snapshot?.settings?.services.find((s) => s.id === serviceId);
+          settingsState = {
+            ...settingsState,
+            isAddServiceOpen: true,
+            isAddThirdParty: false,
+            editingServiceId: serviceId,
+            isFetchingModels: false,
+            fetchedModels: targetService?.availableModels ? [...targetService.availableModels] : undefined,
+            fetchModelsFeedback: null,
+            testFeedback: null,
+          };
           renderSettings();
         }
         return;
@@ -521,7 +560,67 @@ root.addEventListener('click', (event) => {
           if (baseEl) baseEl.value = preset.defaultBaseURL;
           if (modelEl) modelEl.value = preset.defaultModel;
           if (reasoningEl) reasoningEl.value = preset.defaultReasoning;
+
+          settingsState = {
+            ...settingsState,
+            fetchedModels: preset.models ? [...preset.models] : [],
+            fetchModelsFeedback: null,
+          };
+          renderSettings();
         }
+        return;
+      }
+      case 'fetch-service-models': {
+        const baseUrl = document.querySelector<HTMLInputElement>('#form-service-base-url')?.value.trim() ?? '';
+        const apiKey = document.querySelector<HTMLInputElement>('#form-service-api-key')?.value.trim() ?? '';
+        const currentModel = document.querySelector<HTMLInputElement>('#form-service-model')?.value.trim() ?? '';
+        if (!baseUrl) {
+          setSettingsToast('请先输入 Base URL 地址', 'error');
+          return;
+        }
+        settingsState = { ...settingsState, isFetchingModels: true, fetchModelsFeedback: null };
+        renderSettings();
+        void (async () => {
+          try {
+            const res = await window.agentDesktop.fetchAvailableModels({ baseURL: baseUrl, apiKey });
+            if (res.success && res.models && res.models.length > 0) {
+              settingsState = {
+                ...settingsState,
+                isFetchingModels: false,
+                fetchedModels: res.models,
+                fetchModelsFeedback: { success: true, count: res.models.length, latencyMs: res.latencyMs },
+              };
+              renderSettings();
+              const modelInput = document.querySelector<HTMLInputElement>('#form-service-model');
+              const modelSelect = document.querySelector<HTMLSelectElement>('#form-service-model-select');
+              if (modelSelect) {
+                const matched = res.models.find((m) => m === currentModel) ?? res.models[0] ?? '';
+                if (matched) {
+                  modelSelect.value = matched;
+                  if (modelInput) modelInput.value = matched;
+                }
+              }
+              setSettingsToast(`已成功获取到 ${res.models.length} 个可用模型！`, 'success');
+            } else {
+              settingsState = {
+                ...settingsState,
+                isFetchingModels: false,
+                fetchModelsFeedback: { success: false, error: res.error || '未获取到模型' },
+              };
+              renderSettings();
+              setSettingsToast(`获取模型失败: ${res.error || '未发现可用模型'}`, 'error');
+            }
+          } catch (e: unknown) {
+            const err = e instanceof Error ? e.message : String(e);
+            settingsState = {
+              ...settingsState,
+              isFetchingModels: false,
+              fetchModelsFeedback: { success: false, error: err },
+            };
+            renderSettings();
+            setSettingsToast(`获取模型异常: ${err}`, 'error');
+          }
+        })();
         return;
       }
       case 'toggle-key-visibility': {
@@ -534,7 +633,11 @@ root.addEventListener('click', (event) => {
       case 'test-form-service': {
         const baseUrl = document.querySelector<HTMLInputElement>('#form-service-base-url')?.value.trim() ?? '';
         const apiKey = document.querySelector<HTMLInputElement>('#form-service-api-key')?.value.trim() ?? '';
-        const modelName = document.querySelector<HTMLInputElement>('#form-service-model')?.value.trim() ?? '';
+        const modelSelectVal = document.querySelector<HTMLSelectElement>('#form-service-model-select')?.value;
+        let modelName = document.querySelector<HTMLInputElement>('#form-service-model')?.value.trim() ?? '';
+        if (modelSelectVal && modelSelectVal !== '__custom__') {
+          modelName = modelSelectVal;
+        }
         settingsState = { ...settingsState, isTesting: true, testFeedback: null };
         renderSettings();
         void (async () => {
@@ -569,9 +672,21 @@ root.addEventListener('click', (event) => {
         const name = document.querySelector<HTMLInputElement>('#form-service-name')?.value.trim() || '新服务';
         const providerType = (document.querySelector<HTMLSelectElement>('#form-service-type')?.value as any) || 'openai';
         const baseURL = document.querySelector<HTMLInputElement>('#form-service-base-url')?.value.trim() || 'https://api.deepseek.com';
-        const modelName = document.querySelector<HTMLInputElement>('#form-service-model')?.value.trim() || 'deepseek-v4-pro';
+        const modelSelectVal = document.querySelector<HTMLSelectElement>('#form-service-model-select')?.value;
+        let modelName = document.querySelector<HTMLInputElement>('#form-service-model')?.value.trim() ?? '';
+        if (modelSelectVal && modelSelectVal !== '__custom__') {
+          modelName = modelSelectVal;
+        }
+        if (!modelName) {
+          modelName = 'deepseek-chat';
+        }
         const apiKey = document.querySelector<HTMLInputElement>('#form-service-api-key')?.value.trim() ?? '';
         const reasoningEffort = (document.querySelector<HTMLSelectElement>('#form-service-reasoning')?.value as any) || 'medium';
+
+        const existingService = snapshot?.settings?.services.find((s) => s.id === id);
+        const availableModels = settingsState.fetchedModels?.length
+          ? [...settingsState.fetchedModels]
+          : existingService?.availableModels;
 
         const newService: ModelServiceConfig = {
           id,
@@ -581,6 +696,7 @@ root.addEventListener('click', (event) => {
           modelName,
           apiKey,
           reasoningEffort,
+          ...(availableModels ? { availableModels } : {}),
         };
 
         const currentServices = snapshot?.settings?.services ?? [];
@@ -959,6 +1075,19 @@ root.addEventListener('change', (event) => {
         () => window.agentDesktop.setReasoningEffort(target.value as any),
         `模型推理强度已切换为【${target.selectedOptions[0]?.text?.trim() ?? target.value}】`,
       );
+    } else if (target.id === 'form-service-model-select') {
+      const customInput = document.querySelector<HTMLInputElement>('#form-service-model');
+      if (customInput) {
+        if (target.value === '__custom__') {
+          customInput.style.display = 'block';
+          customInput.style.marginTop = '6px';
+          customInput.value = '';
+          customInput.focus();
+        } else {
+          customInput.style.display = 'none';
+          customInput.value = target.value;
+        }
+      }
     }
   } else if (target instanceof HTMLInputElement && target.id === 'composer-file-picker') {
     if (target.files && target.files.length > 0) {

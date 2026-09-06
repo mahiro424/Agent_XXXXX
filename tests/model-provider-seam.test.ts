@@ -16,7 +16,7 @@ describe('Model Provider Seam', () => {
     });
     expect(config.provider).toBe('openai-compatible');
     expect(config.baseURL).toBe('https://api.deepseek.com/v1');
-    expect(config.modelName).toBe('deepseek-v4-flash');
+    expect(config.modelName).toBe('deepseek-chat');
     expect(config.apiKey).toBe('test-key');
   });
 

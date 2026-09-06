@@ -70,6 +70,8 @@ const api: DesktopApi = {
     ipcRenderer.invoke('desktop:save-settings', patch) as Promise<DesktopSnapshot>,
   testModelConnection: (service) =>
     ipcRenderer.invoke('desktop:test-model-connection', service) as Promise<any>,
+  fetchAvailableModels: (service) =>
+    ipcRenderer.invoke('desktop:fetch-models', service) as Promise<any>,
   openConfigDir: () => ipcRenderer.invoke('desktop:open-config-dir') as Promise<void>,
   testMcpConnection: (config, serverId) =>
     ipcRenderer.invoke('desktop:test-mcp-connection', config, serverId) as Promise<any>,

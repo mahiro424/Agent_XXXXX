@@ -288,6 +288,14 @@ function registerIpcHandlers(): void {
     sendState();
     return result;
   });
+  ipcMain.handle('desktop:fetch-models', async (_event, service: unknown) => {
+    if (typeof service !== 'object' || service === null) {
+      throw new TypeError('service config must be an object');
+    }
+    const result = await requireSession().fetchAvailableModels(service as any);
+    sendState();
+    return result;
+  });
   ipcMain.handle('desktop:open-config-dir', async () => {
     const configPath = requireSession().getConfigFilePath();
     shell.showItemInFolder(configPath);

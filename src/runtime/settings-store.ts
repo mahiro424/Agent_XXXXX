@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import type {
   AgentSettings,
   ConnectionTestResult,
+  ModelsFetchResult,
   ModelServiceConfig,
   ProviderModelPreset,
   ServiceProviderType,
@@ -17,6 +18,7 @@ import {
 export type {
   AgentSettings,
   ConnectionTestResult,
+  ModelsFetchResult,
   ModelServiceConfig,
   ProviderModelPreset,
   ServiceProviderType,
@@ -163,6 +165,21 @@ export class SettingsStore {
     return this.save({ services: updatedServices });
   }
 
+  public updateServiceAvailableModels(
+    serviceId: string,
+    models: readonly string[],
+  ): AgentSettings {
+    const settings = this.load();
+    const updatedServices = settings.services.map((s) => {
+      if (s.id !== serviceId) return s;
+      return {
+        ...s,
+        availableModels: models,
+      };
+    });
+    return this.save({ services: updatedServices });
+  }
+
   public async testConnection(
     service: { readonly baseURL: string; readonly apiKey?: string | undefined; readonly modelName?: string | undefined },
   ): Promise<ConnectionTestResult> {
@@ -239,10 +256,104 @@ export class SettingsStore {
     }
   }
 
+  /**
+   * 动态探测大模型服务商支持的真实可用模型列表
+   */
+  public async fetchModels(service: Partial<ModelServiceConfig>): Promise<ModelsFetchResult> {
+    const startTime = Date.now();
+    const cleanBase = (service.baseURL || '').trim().replace(/\/+$/, '');
+    if (!cleanBase) {
+      return {
+        success: false,
+        models: [],
+        latencyMs: 0,
+        error: '未配置 Base URL 地址',
+      };
+    }
+
+    const candidateUrls: string[] = [];
+    if (cleanBase.endsWith('/chat/completions')) {
+      candidateUrls.push(cleanBase.replace(/\/chat\/completions$/, '/models'));
+    } else if (cleanBase.endsWith('/v1')) {
+      candidateUrls.push(`${cleanBase}/models`);
+      candidateUrls.push(cleanBase.replace(/\/v1$/, '/models'));
+    } else {
+      candidateUrls.push(`${cleanBase}/models`);
+      candidateUrls.push(`${cleanBase}/v1/models`);
+    }
+
+    let lastError = '无法获取模型列表';
+    for (const url of candidateUrls) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      try {
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+        };
+        if (service.apiKey) {
+          headers['Authorization'] = `Bearer ${service.apiKey}`;
+        }
+        const response = await this.fetchImpl(url, {
+          method: 'GET',
+          headers,
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        const latencyMs = Date.now() - startTime;
+
+        if (response.ok) {
+          const data = (await response.json()) as { data?: Array<{ id?: string; name?: string }> };
+          if (Array.isArray(data.data)) {
+            const rawModels = data.data
+              .map((item) =>
+                item && typeof item.id === 'string'
+                  ? item.id
+                  : item && typeof item.name === 'string'
+                    ? item.name
+                    : '',
+              )
+              .filter((id) => id.length > 0);
+            const models = Array.from(new Set(rawModels));
+            if (models.length > 0) {
+              return {
+                success: true,
+                models,
+                latencyMs,
+              };
+            }
+          }
+        } else {
+          let errorText = `HTTP ${response.status}`;
+          try {
+            const errJson = (await response.json()) as { error?: { message?: string } | string };
+            if (typeof errJson.error === 'string') {
+              errorText = errJson.error;
+            } else if (errJson.error?.message) {
+              errorText = errJson.error.message;
+            }
+          } catch {
+            // ignore
+          }
+          lastError = errorText;
+        }
+      } catch (err: unknown) {
+        clearTimeout(timeout);
+        lastError = err instanceof Error ? err.message : String(err);
+      }
+    }
+
+    return {
+      success: false,
+      models: [],
+      latencyMs: Date.now() - startTime,
+      error: lastError.includes('abort') ? '请求超时 (10s)' : lastError,
+    };
+  }
+
   private bootstrapDefaultSettings(): AgentSettings {
     const envApiKey = process.env.AGENT_API_KEY ?? process.env.DEEPSEEK_API_KEY ?? '';
     const envBaseURL = process.env.AGENT_BASE_URL ?? 'https://api.deepseek.com';
-    const envModelName = process.env.AGENT_MODEL_NAME ?? 'deepseek-v4-pro';
+    const envModelName = process.env.AGENT_MODEL_NAME ?? 'deepseek-chat';
 
     const services: ModelServiceConfig[] = PRESET_SERVICES.map((p) => {
       if (p.id === 'deepseek-official') {

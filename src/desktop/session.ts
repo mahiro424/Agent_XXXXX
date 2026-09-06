@@ -27,6 +27,7 @@ import { SettingsStore } from '../runtime/settings-store.js';
 import type {
   AgentSettings,
   ConnectionTestResult,
+  ModelsFetchResult,
   ModelServiceConfig,
 } from '../runtime/settings-store.js';
 import type { McpServerConfig, McpServerState } from '../runtime/mcp-types.js';
@@ -44,7 +45,7 @@ export const BUILTIN_DEEPSEEK_CONFIG: ModelConfig = {
   provider: 'openai-compatible',
   apiKey: process.env.AGENT_API_KEY ?? process.env.DEEPSEEK_API_KEY ?? '',
   baseURL: process.env.AGENT_BASE_URL ?? 'https://api.deepseek.com',
-  modelName: process.env.AGENT_MODEL_NAME ?? 'deepseek-v4-flash',
+  modelName: process.env.AGENT_MODEL_NAME ?? 'deepseek-chat',
 };
 
 export class SwitchableModelProvider implements ModelProvider {
@@ -257,6 +258,7 @@ export interface DesktopApi {
   getSettings(): Promise<AgentSettings>;
   saveSettings(patch: Partial<AgentSettings>): Promise<DesktopSnapshot>;
   testModelConnection(service: Partial<ModelServiceConfig>): Promise<ConnectionTestResult>;
+  fetchAvailableModels(service: Partial<ModelServiceConfig>): Promise<ModelsFetchResult>;
   openConfigDir(): Promise<void>;
   testMcpConnection(config: McpServerConfig, serverId?: string): Promise<McpTestResult>;
   saveMcpServer(id: string, config: McpServerConfig): Promise<DesktopSnapshot>;
@@ -808,6 +810,17 @@ export class DesktopSession {
       });
     }
     this.changedSnapshot();
+    return result;
+  }
+
+  public async fetchAvailableModels(
+    service: Partial<ModelServiceConfig>,
+  ): Promise<ModelsFetchResult> {
+    const result = await this.settingsStore.fetchModels(service);
+    if (result.success && service.id && result.models.length > 0) {
+      this.settingsStore.updateServiceAvailableModels(service.id, result.models);
+      this.changedSnapshot();
+    }
     return result;
   }
 

@@ -429,11 +429,11 @@ export function resolveModelConfig(config: ModelConfig = {}): Required<ModelConf
   const baseURL =
     config.baseURL ??
     process.env.AGENT_BASE_URL ??
-    'https://api.deepseek.com/v1';
+    'https://api.deepseek.com';
   const modelName =
     config.modelName ??
     process.env.AGENT_MODEL_NAME ??
-    'deepseek-v4-flash';
+    'deepseek-chat';
   const temperature = config.temperature ?? 0.2;
   const timeoutMs = config.timeoutMs ?? 30000;
   const reasoningEffort = config.reasoningEffort ?? 'medium';
