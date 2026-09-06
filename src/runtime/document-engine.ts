@@ -134,73 +134,6 @@ export class LocalDocumentEngine implements WorkspaceDocumentEngine {
   }
 }
 
-/**
- * Compatibility fixture for the first document-engine seam. It intentionally
- * models an unavailable Office renderer; LocalDocumentEngine is the real
- * offline OOXML implementation used by the workspace runtime.
- */
-export class FixtureDocumentEngine implements DocumentEngine {
-  public readonly capabilities: DocumentEngineCapabilities = {
-    fixture: 'available',
-    docx: 'unavailable',
-    render: 'unavailable',
-  };
-
-  public constructor(private readonly sandbox: LocalWorkspaceSandbox) {}
-
-  public readSource(sourcePath: string): StructuredDocument {
-    const content = this.sandbox.readFile(sourcePath);
-    const kind = sourceKindFor(sourcePath);
-    if (kind === 'markdown') {
-      return parseMarkdown(sourcePath, content);
-    }
-    if (kind === 'csv') {
-      return parseCsv(sourcePath, content);
-    }
-    return parseText(sourcePath, content);
-  }
-
-  public createDocx(_draft: DocumentDraft, _artifactName: string): DocumentEngineResult {
-    return {
-      status: 'unavailable',
-      format: 'docx',
-      reason: 'office_renderer_unavailable',
-      evidence: ['No Office/LibreOffice/ONLYOFFICE renderer is configured in this environment'],
-    };
-  }
-
-  public createFixtureArtifact(draft: DocumentDraft, artifactName: string): DocumentEngineResult {
-    const payload = {
-      kind: 'document-fixture',
-      format: 'fixture-json',
-      title: draft.title,
-      paragraphs: draft.paragraphs,
-      ...(draft.table === undefined ? {} : { table: draft.table }),
-      sourcePaths: draft.sourcePaths,
-    };
-    const written = this.sandbox.writeArtifact(artifactName, JSON.stringify(payload, null, 2));
-    return {
-      status: 'completed',
-      format: 'fixture-json',
-      path: written.path,
-      evidence: [
-        'fixture written through LocalWorkspaceSandbox',
-        `bytes=${written.bytes}`,
-        `source_count=${draft.sourcePaths.length}`,
-      ],
-    };
-  }
-
-  public renderArtifact(_artifactPath: string): DocumentEngineResult {
-    return {
-      status: 'unavailable',
-      format: 'render',
-      reason: 'office_renderer_unavailable',
-      evidence: ['Fixture inspection is available; Office rendering remains an external dependency'],
-    };
-  }
-}
-
 function sourceKindFor(name: string): DocumentSourceKind {
   const extension = name.toLowerCase().split('.').at(-1);
   if (extension === 'md' || extension === 'markdown') {
@@ -210,47 +143,6 @@ function sourceKindFor(name: string): DocumentSourceKind {
     return 'csv';
   }
   return 'text';
-}
-
-function parseMarkdown(sourcePath: string, content: string): StructuredDocument {
-  const lines = content.split(/\r?\n/);
-  const heading = lines.find((line) => /^#\s+/.test(line));
-  const paragraphs = lines
-    .filter((line) => line.trim().length > 0 && !/^#\s+/.test(line))
-    .map((line) => line.trim());
-  return {
-    sourcePath,
-    format: 'markdown',
-    title: heading ? heading.replace(/^#\s+/, '').trim() : basename(sourcePath),
-    paragraphs,
-  };
-}
-
-function parseText(sourcePath: string, content: string): StructuredDocument {
-  return {
-    sourcePath,
-    format: 'text',
-    title: basename(sourcePath),
-    paragraphs: content
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0),
-  };
-}
-
-function parseCsv(sourcePath: string, content: string): StructuredDocument {
-  const rows = content
-    .split(/\r?\n/)
-    .filter((line) => line.trim().length > 0)
-    .map(parseCsvLine);
-  const [headers = [], ...dataRows] = rows;
-  return {
-    sourcePath,
-    format: 'csv',
-    title: basename(sourcePath),
-    paragraphs: [],
-    table: { headers, rows: dataRows },
-  };
 }
 
 function normalizeSourceText(kind: DocumentSourceKind, text: string): string {

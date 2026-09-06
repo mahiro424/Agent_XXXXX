@@ -2,9 +2,75 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { FixtureDocumentEngine } from '../src/runtime/document-engine.js';
+import {
+  type DocumentDraft,
+  type DocumentEngine,
+  type DocumentEngineCapabilities,
+  type DocumentEngineResult,
+  type StructuredDocument,
+} from '../src/runtime/document-engine.js';
 import { EvidenceVerifier } from '../src/runtime/verifier.js';
 import { LocalWorkspaceSandbox } from '../src/runtime/sandbox.js';
+
+class FixtureDocumentEngine implements DocumentEngine {
+  public readonly capabilities: DocumentEngineCapabilities = {
+    fixture: 'available',
+    docx: 'unavailable',
+    render: 'unavailable',
+  };
+
+  public constructor(private readonly sandbox: LocalWorkspaceSandbox) {}
+
+  public readSource(sourcePath: string): StructuredDocument {
+    const content = this.sandbox.readFile(sourcePath);
+    if (sourcePath.endsWith('.md')) {
+      const lines = content.trim().split('\n');
+      const title = lines[0]?.replace(/^#\s*/, '') || sourcePath;
+      const paragraphs = lines.slice(1).map((l) => l.trim()).filter(Boolean);
+      return { sourcePath, format: 'markdown', title, paragraphs };
+    }
+    if (sourcePath.endsWith('.csv')) {
+      const lines = content.trim().split('\n');
+      const headers = lines[0]?.split(',').map((h) => h.trim()) ?? [];
+      const rows = lines.slice(1).map((l) => l.split(',').map((c) => c.trim()));
+      return { sourcePath, format: 'csv', title: sourcePath, paragraphs: [], table: { headers, rows } };
+    }
+    const paragraphs = content.trim().split('\n').map((l) => l.trim()).filter(Boolean);
+    return { sourcePath, format: 'text', title: sourcePath, paragraphs };
+  }
+
+  public createDocx(_draft: DocumentDraft, _artifactName: string): DocumentEngineResult {
+    return {
+      status: 'unavailable',
+      format: 'docx',
+      reason: 'office_renderer_unavailable',
+    };
+  }
+
+  public createFixtureArtifact(draft: DocumentDraft, artifactName: string): DocumentEngineResult {
+    const payload = {
+      kind: 'document-fixture',
+      format: 'fixture-json',
+      title: draft.title,
+      paragraphs: draft.paragraphs,
+      sourcePaths: draft.sourcePaths,
+    };
+    const written = this.sandbox.writeArtifact(artifactName, JSON.stringify(payload, null, 2));
+    return {
+      status: 'completed',
+      format: 'fixture-json',
+      path: written.path,
+    };
+  }
+
+  public renderArtifact(_artifactPath: string): DocumentEngineResult {
+    return {
+      status: 'unavailable',
+      format: 'render',
+      reason: 'office_renderer_unavailable',
+    };
+  }
+}
 
 const roots: string[] = [];
 

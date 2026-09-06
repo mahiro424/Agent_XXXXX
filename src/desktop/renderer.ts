@@ -1,8 +1,6 @@
 import {
   renderAppShell,
   renderDemoHome,
-  renderEventTimeline,
-  renderTaskPlan,
 } from '../ui/render.js';
 import { renderSettingsModal, RECOMMENDED_MCP_PRESETS } from '../ui/settings-modal.js';
 import type { SettingsModalState, SettingsTabId } from '../ui/settings-modal.js';

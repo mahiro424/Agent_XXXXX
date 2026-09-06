@@ -719,6 +719,12 @@ ${fileSection}
     }
 
     const tools = input.tools ?? DEFAULT_AGENT_TOOLS;
+    const toolNameMap = new Map<string, string>();
+    for (const t of tools) {
+      const sanitized = t.name.replace(/\./g, '_');
+      toolNameMap.set(sanitized, t.name);
+      toolNameMap.set(t.name, t.name);
+    }
     const defaultSys = this.buildSystemPrompt(tools, input.workspaceFiles);
     const systemPrompt = input.systemPrompt ?? defaultSys;
 
@@ -772,6 +778,7 @@ ${fileSection}
       model: this.config.modelName,
       messages: formattedMessages,
       temperature: this.config.temperature,
+      stream_options: { include_usage: true },
     };
     if (this.config.reasoningEffort && this.config.reasoningEffort !== 'off') {
       requestBody.reasoning_effort = this.config.reasoningEffort;
@@ -813,6 +820,7 @@ ${fileSection}
       ) {
         let accumulatedContent = '';
         let accumulatedReasoning = '';
+        let accumulatedUsage: ModelChatOutput['usage'] | undefined;
         const toolCallsMap = new Map<number, { id: string; name: string; arguments: string }>();
 
         const reader = (response.body as ReadableStream<Uint8Array>).getReader();
@@ -852,7 +860,19 @@ ${fileSection}
                       }>;
                     };
                   }>;
+                  usage?: {
+                    prompt_tokens?: number;
+                    completion_tokens?: number;
+                    total_tokens?: number;
+                  };
                 };
+                if (json.usage) {
+                  accumulatedUsage = {
+                    promptTokens: json.usage.prompt_tokens,
+                    completionTokens: json.usage.completion_tokens,
+                    totalTokens: json.usage.total_tokens,
+                  };
+                }
                 const delta = json.choices?.[0]?.delta;
                 if (delta) {
                   if (delta.reasoning_content) {
@@ -889,9 +909,7 @@ ${fileSection}
           } catch {
             parsedArgs = { raw: tc.arguments };
           }
-          const originalName = tc.name.includes('_')
-            ? tc.name.replace(/_/, '.')
-            : tc.name;
+          const originalName = toolNameMap.get(tc.name) ?? (tc.name.includes('_') ? tc.name.replace(/_/, '.') : tc.name);
           toolCalls.push({
             id: tc.id || this.createId('call'),
             name: originalName,
@@ -903,6 +921,7 @@ ${fileSection}
           content: accumulatedContent,
           ...(accumulatedReasoning ? { reasoningContent: accumulatedReasoning } : {}),
           ...(toolCalls.length > 0 ? { toolCalls } : {}),
+          ...(accumulatedUsage ? { usage: accumulatedUsage } : {}),
         };
       }
 
@@ -940,9 +959,7 @@ ${fileSection}
           } catch {
             parsedArgs = { raw: tc.function.arguments };
           }
-          const originalName = tc.function.name.includes('_')
-            ? tc.function.name.replace(/_/, '.')
-            : tc.function.name;
+          const originalName = toolNameMap.get(tc.function.name) ?? (tc.function.name.includes('_') ? tc.function.name.replace(/_/, '.') : tc.function.name);
           toolCalls.push({
             id: tc.id,
             name: originalName,

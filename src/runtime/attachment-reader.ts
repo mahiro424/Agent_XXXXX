@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { extname } from 'node:path';
 import type { AttachmentItem } from './protocol.js';
+import { LocalDocumentEngine } from './document-engine.js';
 
 export interface ExtractedAttachmentContent {
   readonly id: string;
@@ -10,6 +11,7 @@ export interface ExtractedAttachmentContent {
   readonly size: number;
   readonly textContent: string;
   readonly isTruncated: boolean;
+  readonly dataUrl?: string | undefined;
 }
 
 export interface AttachmentReaderOptions {
@@ -56,15 +58,36 @@ export class AttachmentReader {
       const buffer = readFileSync(item.path);
       const b64 = buffer.toString('base64');
       const mime = item.type || (ext === '.png' ? 'image/png' : 'image/jpeg');
+      const dataUrl = `data:${mime};base64,${b64}`;
       return {
         id: item.id,
         name: item.name,
         path: item.path,
         type: mime,
         size: stat.size,
-        textContent: `[图片附件: ${item.name} (${Math.round(stat.size / 1024)}KB) data:${mime};base64,${b64.slice(0, 120)}...]`,
+        dataUrl,
+        textContent: `[图片附件: ${item.name} (${Math.round(stat.size / 1024)}KB) 路径: ${item.path}]`,
         isTruncated: false,
       };
+    }
+
+    // Word 文档 (.docx)
+    if (ext === '.docx') {
+      try {
+        const buffer = readFileSync(item.path);
+        const docxText = new LocalDocumentEngine().readDocx(buffer);
+        return {
+          id: item.id,
+          name: item.name,
+          path: item.path,
+          type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          size: stat.size,
+          textContent: docxText || `[Word 文档: ${item.name} 已挂载]`,
+          isTruncated: false,
+        };
+      } catch {
+        // 容错降级
+      }
     }
 
     // 文本/代码/数据文件

@@ -224,7 +224,7 @@ export class WorkspaceReportToolHandler implements IToolHandler {
     const sources = sourceNames.map((name) =>
       context.documentEngine.readSource(name, context.sandbox.readFileBuffer(name)),
     );
-    const report = context.documentEngine.createDocx({
+    const report = context.officeEngine.createDocx({
       title: (args.title as string) || 'Weekly Meeting Report',
       sources,
     });

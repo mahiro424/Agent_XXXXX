@@ -59,7 +59,15 @@ export class SafeProcessRunner {
       const timer = setTimeout(() => {
         timedOut = true;
         killed = true;
-        child.kill('SIGKILL');
+        if (isWindows && child.pid) {
+          try {
+            spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
+          } catch {
+            child.kill('SIGKILL');
+          }
+        } else {
+          child.kill('SIGKILL');
+        }
       }, timeoutMs);
 
       child.stdout.on('data', (chunk: Buffer) => {

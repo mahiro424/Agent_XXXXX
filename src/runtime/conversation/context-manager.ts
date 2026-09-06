@@ -8,7 +8,7 @@ export interface LayeredContext {
   readonly activeMessages: readonly ChatMessage[];
 }
 
-export interface ContextCompactorOptions {
+export interface ContextManagerOptions {
   readonly maxActiveMessages?: number;
   readonly maxToolOutputChars?: number;
   readonly preserveInitialGoal?: boolean;
@@ -19,7 +19,7 @@ export class ContextManager {
   private readonly maxToolOutputChars: number;
   private readonly preserveInitialGoal: boolean;
 
-  public constructor(options: ContextCompactorOptions = {}) {
+  public constructor(options: ContextManagerOptions = {}) {
     this.maxActiveMessages = options.maxActiveMessages ?? 10;
     this.maxToolOutputChars = options.maxToolOutputChars ?? 600;
     this.preserveInitialGoal = options.preserveInitialGoal ?? true;

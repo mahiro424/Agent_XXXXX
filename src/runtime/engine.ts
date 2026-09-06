@@ -197,6 +197,14 @@ export class RuntimeEngine {
     const result = this.compactor.compact(messages, thread.id, this.createId, this.now);
     if (result.compacted) {
       this.threadMessages.set(thread.id, [...result.messages]);
+      const checkpointMsg = result.messages[0];
+      if (checkpointMsg) {
+        this.log.append({
+          type: 'message.created',
+          threadId: thread.id,
+          payload: checkpointMsg,
+        });
+      }
     }
     return result;
   }
@@ -1211,7 +1219,28 @@ export class RuntimeEngine {
 
     // 2. 需求模糊反问 (clarification_needed)
     if (intentResult.intent === 'clarification_needed') {
-      const clarifyText = '收到您的指令。为了更精准地执行，请问您具体希望处理哪个文件或实现什么目标？例如：\n1. 汇总销售数据生成 Excel 周报\n2. 整理会议纪要生成 Word 报告\n3. 检查或排查工作区内的代码与文本文件';
+      const tableFiles = workspaceFiles?.filter((f) => f.endsWith('.csv') || f.endsWith('.xlsx')) ?? [];
+      const docFiles = workspaceFiles?.filter((f) => f.endsWith('.md') || f.endsWith('.txt')) ?? [];
+      const codeFiles = workspaceFiles?.filter((f) => f.endsWith('.ts') || f.endsWith('.js') || f.endsWith('.py')) ?? [];
+
+      const options: string[] = [];
+      if (tableFiles.length > 0) {
+        options.push(`分析或汇总表格数据（如 ${tableFiles.slice(0, 2).join(', ')}）`);
+      }
+      if (docFiles.length > 0) {
+        options.push(`整理参考材料并生成结构化报告（如 ${docFiles.slice(0, 2).join(', ')}）`);
+      }
+      if (codeFiles.length > 0) {
+        options.push(`排查或运行代码与脚本（如 ${codeFiles.slice(0, 2).join(', ')}）`);
+      }
+      if (options.length === 0) {
+        options.push('在工作区中读取、创建或修改指定文件');
+        options.push('运行受控脚本或调用工具处理数据');
+        options.push('提供专业技术解答与架构规划咨询');
+      }
+
+      const suggestions = options.map((opt, i) => `${i + 1}. ${opt}`).join('\n');
+      const clarifyText = `收到您的指令。当前指令较为简略，为了更精准地执行，请问您具体希望处理哪个目标？例如：\n${suggestions}\n\n您可以直接补充文件路径或详细描述期望结果。`;
       const clarifyMsg: ChatMessage = {
         id: this.createId('msg'),
         threadId: thread.id,

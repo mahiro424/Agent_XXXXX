@@ -64,6 +64,41 @@ export interface DesktopBridgeAdapter {
   invoke(request: BridgeRequest): BridgeResponse;
 }
 
+export class SystemDesktopBridgeAdapter implements DesktopBridgeAdapter {
+  public invoke(request: BridgeRequest): BridgeResponse {
+    if (request.capability === 'open_output_directory') {
+      const dir = request.outputDirectory;
+      if (!dir) {
+        return {
+          version: BRIDGE_PROTOCOL_VERSION,
+          requestId: request.requestId,
+          capability: request.capability,
+          status: 'failed',
+          taskId: request.taskId,
+          errorCode: 'invalid_request',
+          reason: 'open_output_directory requires outputDirectory',
+        };
+      }
+      return {
+        version: BRIDGE_PROTOCOL_VERSION,
+        requestId: request.requestId,
+        capability: request.capability,
+        status: 'completed',
+        taskId: request.taskId,
+        evidence: { outputDirectory: dir },
+      };
+    }
+    return {
+      version: BRIDGE_PROTOCOL_VERSION,
+      requestId: request.requestId,
+      capability: request.capability,
+      status: 'completed',
+      taskId: request.taskId,
+      evidence: {},
+    };
+  }
+}
+
 export interface OptionalDesktopBridgeOptions {
   readonly enabled?: boolean;
   readonly adapter?: DesktopBridgeAdapter;

@@ -22,6 +22,7 @@ import { DemoHomeController, computeWorkspaceId } from '../ui/demo-home.js';
 import type { DemoHomeView, DemoModelMode, FilePermissionMode } from '../ui/demo-home.js';
 import { DeterministicModelProvider, OpenAICompatibleModelProvider } from '../runtime/model-provider.js';
 import { AttachmentReader } from '../runtime/attachment-reader.js';
+import { ContextCompactor } from '../runtime/context-compactor.js';
 import { DefaultApprovalPolicy } from '../runtime/approval-policy.js';
 import { SettingsStore } from '../runtime/settings-store.js';
 import type {
@@ -284,6 +285,7 @@ export class DesktopSession {
   private readonly listeners = new Set<(snapshot: DesktopSnapshot) => void>();
   private readonly switchableModel: SwitchableModelProvider | undefined;
   private readonly settingsStore: SettingsStore;
+  private readonly compactor = new ContextCompactor();
   private permissionMode: FilePermissionMode;
   private activeThreadId: string | undefined;
   private activeTurnId: string | undefined;
@@ -518,14 +520,6 @@ export class DesktopSession {
     try {
       if (typeof this.server.compactThreadMessages === 'function') {
         this.server.compactThreadMessages(this.activeThreadId);
-      } else {
-        const messages = this.server.listMessages(this.activeThreadId);
-        if (messages.length > 1) {
-          const prompt = `/compact 请将此前对话与已执行任务梳理提炼为结构化摘要，保留关键决策、已生成文件资产与下一步规划。`;
-          await this.server.sendMessage(this.activeThreadId, prompt, {
-            skillId: 'general-assistant',
-          });
-        }
       }
     } finally {
       this.home.setIsCompacting(false);
@@ -535,26 +529,7 @@ export class DesktopSession {
 
   public computeTokenSnapshot(): TokenUsageSnapshot {
     const messages = this.activeThreadId ? this.server.listMessages(this.activeThreadId) : [];
-    let charCount = 0;
-    for (const m of messages) {
-      charCount += (m.content?.length ?? 0) + (m.reasoningContent?.length ?? 0);
-    }
-    const usedTokens = Math.max(120, Math.ceil(charCount / 3.5));
-    const contextWindow = 128000;
-    const inputTokens = Math.round(usedTokens * 0.7);
-    const outputTokens = Math.round(usedTokens * 0.3);
-    const cacheRead = Math.round(usedTokens * 0.15);
-    const cacheWrite = Math.round(usedTokens * 0.05);
-
-    return {
-      usedTokens,
-      contextWindow,
-      inputTokens,
-      outputTokens,
-      cacheRead,
-      cacheWrite,
-      messagesCount: messages.length,
-    };
+    return this.compactor.estimateTokens(messages, this.shell.view().modelMode === 'live');
   }
 
   public setTaskInput(input: string): DesktopSnapshot {
