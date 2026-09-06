@@ -73,12 +73,57 @@ export class DeterministicModelProvider implements ModelProvider {
   ) {}
 
   public proposePlan(input: ModelPlanInput): Plan {
+    let title = this.defaultStep?.title;
+    let toolName = this.defaultStep?.toolName;
+    let risk: 'read' | 'write' | 'external' = 'write';
+    let requiresApproval = this.defaultStep?.requiresApproval ?? true;
+
+    if (!title || !toolName) {
+      const text = input.userInput.toLowerCase();
+      if (
+        text.includes('excel') ||
+        text.includes('sales') ||
+        text.includes('销售') ||
+        text.includes('表格') ||
+        text.includes('汇总')
+      ) {
+        title = '处理数据并生成汇总表格';
+        toolName = 'workspace.excel';
+        risk = 'write';
+        requiresApproval = true;
+      } else if (
+        text.includes('script') ||
+        text.includes('脚本') ||
+        text.includes('计算') ||
+        text.includes('codeact')
+      ) {
+        title = '运行本地沙箱脚本进行精确计算';
+        toolName = 'workspace.execute_script';
+        risk = 'write';
+        requiresApproval = true;
+      } else if (
+        text.includes('读取') ||
+        text.includes('read') ||
+        text.includes('查看')
+      ) {
+        title = '读取工作区文件内容';
+        toolName = 'workspace.read_file';
+        risk = 'read';
+        requiresApproval = false;
+      } else {
+        title = '整理会议材料并生成周报';
+        toolName = 'workspace.write_report';
+        risk = 'write';
+        requiresApproval = true;
+      }
+    }
+
     const step: PlanStep = {
       id: `plan-step-${input.turnId}`,
-      title: this.defaultStep?.title ?? '读取并生成周报',
-      toolName: this.defaultStep?.toolName ?? 'workspace.write_report',
-      risk: 'write',
-      requiresApproval: this.defaultStep?.requiresApproval ?? true,
+      title,
+      toolName,
+      risk,
+      requiresApproval,
     };
     return {
       id: `plan-${input.turnId}`,

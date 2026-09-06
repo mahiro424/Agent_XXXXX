@@ -3,10 +3,6 @@ import type { Thread, ThreadStatus, Turn, TurnStatus } from '../runtime/protocol
 
 export const APP_NAV_ITEMS = [
   { id: 'demo-home', label: '新会话' },
-  { id: 'cases', label: '案例中心' },
-  { id: 'scheduled-tasks', label: '定时任务' },
-  { id: 'skills', label: '技能' },
-  { id: 'connectors', label: '连接器' },
 ] as const;
 
 export type AppRoute =

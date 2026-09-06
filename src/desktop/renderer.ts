@@ -223,10 +223,10 @@ root.addEventListener('click', (event) => {
     const category = button.dataset.category;
     if (category !== undefined) {
       const categoryPrompts: Record<string, string> = {
-        excel: '读取工作区 sales.csv，使用 ExcelJS 生成包含跨表求和公式的销售报表 sales-summary.xlsx',
-        word: '读取工作区 meeting-notes.md，使用 docx 生成格式规范的大纲周报 weekly-meeting-report.docx',
+        excel: '读取工作区表格，使用 ExcelJS 生成包含跨表求和公式的销售报表 sales-summary.xlsx',
+        word: '读取工作区参考材料，使用 docx 生成格式规范的大纲周报 weekly-meeting-report.docx',
         clean: '清洗多源办公数据并剔除异常值，生成规整的待分析表格',
-        verify: '核验 artifacts 产物物理完整性与安全哈希（解构 ZIP/OpenXML 校验核心部件非空）',
+        verify: '核验产物物理完整性与安全哈希（解构 ZIP/OpenXML 校验核心部件非空）',
         custom: '编排自定义办公自动化复合任务并在双重沙箱中安全执行',
       };
       const prompt = categoryPrompts[category];

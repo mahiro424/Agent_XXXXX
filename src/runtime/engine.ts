@@ -813,12 +813,9 @@ export class RuntimeEngine {
             }
           : isDocx
             ? {
-                requiredText: ['Weekly Meeting Report'],
-                optionalText: [
-                  'meeting-notes.md',
-                  'decisions.txt',
-                  'sales.csv',
-                ],
+                ...(lower.includes('weekly-meeting-report')
+                  ? { requiredText: ['Weekly Meeting Report'] }
+                  : {}),
                 requireDocxStructure: true,
                 requireXlsxStructure: false,
               }

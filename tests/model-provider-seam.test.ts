@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_AGENT_TOOLS,
+  DeterministicModelProvider,
   OpenAICompatibleModelProvider,
   resolveModelConfig,
 } from '../src/runtime/model-provider.js';
@@ -216,4 +217,45 @@ describe('Model Provider Seam', () => {
       status: 'pending',
     });
   });
+
+  it('DeterministicModelProvider dynamically proposes plan steps and tools matching user intent', () => {
+    const provider = new DeterministicModelProvider();
+
+    // 1. 表格/销售意图 -> workspace.excel
+    const excelPlan = provider.proposePlan({
+      turnId: 'turn-excel',
+      userInput: '请统计销售数据并生成汇总 Excel 表格',
+    });
+    expect(excelPlan.steps[0]?.toolName).toBe('workspace.excel');
+    expect(excelPlan.steps[0]?.title).toContain('汇总表格');
+    expect(excelPlan.steps[0]?.risk).toBe('write');
+    expect(excelPlan.steps[0]?.requiresApproval).toBe(true);
+
+    // 2. 脚本/计算意图 -> workspace.execute_script
+    const scriptPlan = provider.proposePlan({
+      turnId: 'turn-script',
+      userInput: '执行 Python 脚本计算复合增长率',
+    });
+    expect(scriptPlan.steps[0]?.toolName).toBe('workspace.execute_script');
+    expect(scriptPlan.steps[0]?.title).toContain('沙箱脚本');
+    expect(scriptPlan.steps[0]?.risk).toBe('write');
+
+    // 3. 读取文件意图 -> workspace.read_file (read risk, 不需要审批)
+    const readPlan = provider.proposePlan({
+      turnId: 'turn-read',
+      userInput: '读取工作区 readme.md 文件内容',
+    });
+    expect(readPlan.steps[0]?.toolName).toBe('workspace.read_file');
+    expect(readPlan.steps[0]?.risk).toBe('read');
+    expect(readPlan.steps[0]?.requiresApproval).toBe(false);
+
+    // 4. 周报/报告意图 -> workspace.write_report
+    const reportPlan = provider.proposePlan({
+      turnId: 'turn-report',
+      userInput: '根据会议纪要生成本周周报',
+    });
+    expect(reportPlan.steps[0]?.toolName).toBe('workspace.write_report');
+    expect(reportPlan.steps[0]?.risk).toBe('write');
+  });
 });
+
