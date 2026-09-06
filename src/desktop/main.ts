@@ -1,6 +1,6 @@
 import electronPkg from 'electron';
 import type { BrowserWindow as BrowserWindowType } from 'electron';
-const { app, BrowserWindow, dialog, ipcMain, Menu } = electronPkg;
+const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = electronPkg;
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { DesktopSession } from './session.js';
@@ -23,15 +23,27 @@ function requireSnapshot(): DesktopSnapshot {
 }
 
 function isModelMode(value: unknown): value is ShellModelMode {
-  return value === 'fake' || value === 'live';
+  return value === 'live';
 }
 
 function isPermissionMode(value: unknown): value is FilePermissionMode {
   return (
     value === 'full-access' ||
-    value === 'sandbox-artifacts' ||
+    value === 'auto' ||
+    value === 'accept-edits' ||
+    value === 'risk-gated' ||
     value === 'ask-approval' ||
     value === 'read-only'
+  );
+}
+
+function isReasoningEffort(value: unknown): value is 'max' | 'high' | 'medium' | 'low' | 'off' {
+  return (
+    value === 'max' ||
+    value === 'high' ||
+    value === 'medium' ||
+    value === 'low' ||
+    value === 'off'
   );
 }
 
@@ -149,6 +161,162 @@ function registerIpcHandlers(): void {
   );
   ipcMain.handle('desktop:stop-task', () => {
     const snapshot = requireSession().stopTask();
+    sendState();
+    return snapshot;
+  });
+  ipcMain.handle('desktop:add-attachment', (_event, item: unknown) => {
+    if (typeof item !== 'object' || item === null) {
+      throw new TypeError('attachment must be an object');
+    }
+    const snapshot = requireSession().addAttachment(item as any);
+    sendState();
+    return snapshot;
+  });
+  ipcMain.handle('desktop:remove-attachment', (_event, id: unknown) => {
+    if (typeof id !== 'string') {
+      throw new TypeError('attachment id must be a string');
+    }
+    const snapshot = requireSession().removeAttachment(id);
+    sendState();
+    return snapshot;
+  });
+  ipcMain.handle('desktop:clear-attachments', () => {
+    const snapshot = requireSession().clearAttachments();
+    sendState();
+    return snapshot;
+  });
+  ipcMain.handle('desktop:set-reasoning-effort', (_event, effort: unknown) => {
+    if (!isReasoningEffort(effort)) {
+      throw new TypeError('unsupported reasoning effort');
+    }
+    const snapshot = requireSession().setReasoningEffort(effort);
+    sendState();
+    return snapshot;
+  });
+  ipcMain.handle('desktop:compact-context', async () => {
+    const snapshot = await requireSession().compactContext();
+    sendState();
+    return snapshot;
+  });
+  ipcMain.handle('desktop:create-session', async (_event, options?: { projectId?: string; title?: string }) => {
+    const snapshot = await requireSession().createSession(options);
+    sendState();
+    return snapshot;
+  });
+  ipcMain.handle('desktop:switch-session', async (_event, sessionId: unknown) => {
+    if (typeof sessionId !== 'string') {
+      throw new TypeError('sessionId must be a string');
+    }
+    const snapshot = await requireSession().switchSession(sessionId);
+    sendState();
+    return snapshot;
+  });
+  ipcMain.handle('desktop:toggle-pin-session', async (_event, sessionId: unknown) => {
+    if (typeof sessionId !== 'string') {
+      throw new TypeError('sessionId must be a string');
+    }
+    const snapshot = await requireSession().togglePinSession(sessionId);
+    sendState();
+    return snapshot;
+  });
+  ipcMain.handle('desktop:rename-session', async (_event, sessionId: unknown, newTitle: unknown) => {
+    if (typeof sessionId !== 'string' || typeof newTitle !== 'string') {
+      throw new TypeError('invalid arguments for rename-session');
+    }
+    const snapshot = await requireSession().renameSession(sessionId, newTitle);
+    sendState();
+    return snapshot;
+  });
+  ipcMain.handle('desktop:delete-session', async (_event, sessionId: unknown) => {
+    if (typeof sessionId !== 'string') {
+      throw new TypeError('sessionId must be a string');
+    }
+    const snapshot = await requireSession().deleteSession(sessionId);
+    sendState();
+    return snapshot;
+  });
+  ipcMain.handle('desktop:create-project', async (_event, name: unknown, folderPath: unknown) => {
+    if (typeof name !== 'string' || typeof folderPath !== 'string') {
+      throw new TypeError('invalid arguments for create-project');
+    }
+    const snapshot = await requireSession().createProject(name, folderPath);
+    sendState();
+    return snapshot;
+  });
+  ipcMain.handle('desktop:delete-project', async (_event, projectId: unknown) => {
+    if (typeof projectId !== 'string') {
+      throw new TypeError('projectId must be a string');
+    }
+    const snapshot = await requireSession().deleteProject(projectId);
+    sendState();
+    return snapshot;
+  });
+  ipcMain.handle('desktop:toggle-project-expanded', async (_event, projectId: unknown) => {
+    if (typeof projectId !== 'string') {
+      throw new TypeError('projectId must be a string');
+    }
+    const snapshot = await requireSession().toggleProjectExpanded(projectId);
+    sendState();
+    return snapshot;
+  });
+  ipcMain.handle('desktop:prompt-select-folder', async () => {
+    const result = await dialog.showOpenDialog({
+      title: '选择项目工作区文件夹',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (result.canceled || !result.filePaths[0]) {
+      return undefined;
+    }
+    return result.filePaths[0];
+  });
+  ipcMain.handle('desktop:get-settings', () => {
+    return requireSession().getSettings();
+  });
+  ipcMain.handle('desktop:save-settings', async (_event, patch: unknown) => {
+    if (typeof patch !== 'object' || patch === null) {
+      throw new TypeError('settings patch must be an object');
+    }
+    const snapshot = await requireSession().saveSettings(patch as any);
+    sendState();
+    return snapshot;
+  });
+  ipcMain.handle('desktop:test-model-connection', async (_event, service: unknown) => {
+    if (typeof service !== 'object' || service === null) {
+      throw new TypeError('service config must be an object');
+    }
+    const result = await requireSession().testModelConnection(service as any);
+    sendState();
+    return result;
+  });
+  ipcMain.handle('desktop:open-config-dir', async () => {
+    const configPath = requireSession().getConfigFilePath();
+    shell.showItemInFolder(configPath);
+  });
+  ipcMain.handle('desktop:test-mcp-connection', async (_event, config: unknown, serverId?: unknown) => {
+    if (typeof config !== 'object' || config === null) {
+      throw new TypeError('mcp config must be an object');
+    }
+    const sId = typeof serverId === 'string' ? serverId : 'test';
+    return await requireSession().testMcpConnection(config as any, sId);
+  });
+  ipcMain.handle('desktop:save-mcp-server', async (_event, id: unknown, config: unknown) => {
+    if (typeof id !== 'string' || typeof config !== 'object' || config === null) {
+      throw new TypeError('invalid arguments for save-mcp-server');
+    }
+    const snapshot = await requireSession().saveMcpServer(id, config as any);
+    sendState();
+    return snapshot;
+  });
+  ipcMain.handle('desktop:delete-mcp-server', async (_event, id: unknown) => {
+    if (typeof id !== 'string') {
+      throw new TypeError('id must be a string');
+    }
+    const snapshot = await requireSession().deleteMcpServer(id);
+    sendState();
+    return snapshot;
+  });
+  ipcMain.handle('desktop:reload-mcp-servers', async () => {
+    const snapshot = await requireSession().reloadMcpServers();
     sendState();
     return snapshot;
   });

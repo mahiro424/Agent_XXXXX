@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AppServer } from '../src/runtime/app-server.js';
 import { DesktopSession } from '../src/desktop/session.js';
+import { renderAppShell } from '../src/ui/render.js';
 
 const roots: string[] = [];
 
@@ -103,5 +104,68 @@ describe('DesktopSession', () => {
     expect(snapshot.turn?.status).toBe('completed');
     expect(snapshot.events.some((event) => event.type === 'tool.completed')).toBe(true);
     expect(snapshot.events.some((event) => event.type === 'artifact.verified')).toBe(true);
+  });
+
+  it('manages Codex-style ephemeral sessions, pinned sessions, and projects with folder binding', async () => {
+    const session = new DesktopSession({ server: new AppServer() });
+
+    // 1. 创建新临时会话
+    const snap1 = await session.createSession({ title: '临时草稿会话' });
+    expect(snap1.sessions).toBeDefined();
+    expect(snap1.sessions?.length).toBe(1);
+    const ephemeralId = snap1.sessions![0]!.id;
+    expect(snap1.sessions![0]!.title).toBe('临时草稿会话');
+    expect(snap1.sessions![0]!.projectId).toBeUndefined();
+
+    // 2. 置顶会话
+    const snap2 = await session.togglePinSession(ephemeralId);
+    expect(snap2.sessions?.find((s) => s.id === ephemeralId)?.isPinned).toBe(true);
+
+    // 3. 重命名会话
+    const snap3 = await session.renameSession(ephemeralId, '已更名的草稿');
+    expect(snap3.sessions?.find((s) => s.id === ephemeralId)?.title).toBe('已更名的草稿');
+
+    // 4. 创建项目并绑定文件夹
+    const projectFolder = workspace();
+    const snap4 = await session.createProject('核心开发项目', projectFolder);
+    expect(snap4.projects).toBeDefined();
+    expect(snap4.projects?.length).toBe(1);
+    const project = snap4.projects![0]!;
+    expect(project.name).toBe('核心开发项目');
+    expect(project.folderPath).toBe(projectFolder);
+
+    // 项目创建后自动包含一个初始主会话
+    const projectSessions = snap4.sessions?.filter((s) => s.projectId === project.id);
+    expect(projectSessions?.length).toBe(1);
+    expect(projectSessions![0]!.title).toBe('核心开发项目 - 主会话');
+
+    // 验证 Codex 风格侧边栏 HTML 结构
+    const renderedMarkup = renderAppShell(snap4.shell, {
+      sessions: snap4.sessions,
+      projects: snap4.projects,
+      activeSessionId: snap4.activeSessionId,
+    });
+    expect(renderedMarkup).toContain('核心开发项目');
+    expect(renderedMarkup).toContain(projectFolder);
+    expect(renderedMarkup).toContain('在此项目创建新会话');
+    // 确保 mock 文件概览彻底消除，不污染真实界面
+    expect(renderedMarkup).not.toContain('工作区文件概览 (Files)');
+    expect(renderedMarkup).not.toContain('sales.csv');
+
+    // 5. 在该项目内创建第二个会话
+    const snap5 = await session.createSession({
+      projectId: project.id,
+      title: '项目功能迭代分析',
+    });
+    const projSessionsAfter = snap5.sessions?.filter((s) => s.projectId === project.id);
+    expect(projSessionsAfter?.length).toBe(2);
+
+    // 6. 切换会话
+    const snap6 = await session.switchSession(ephemeralId);
+    expect(snap6.activeSessionId).toBe(ephemeralId);
+
+    // 7. 删除临时会话
+    const snap7 = await session.deleteSession(ephemeralId);
+    expect(snap7.sessions?.some((s) => s.id === ephemeralId)).toBe(false);
   });
 });

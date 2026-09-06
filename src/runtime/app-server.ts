@@ -1,6 +1,8 @@
 import { RuntimeEngine } from './engine.js';
 import type { RuntimeEngineOptions, RespondApprovalInput } from './engine.js';
 import type { VerificationRequest, VerificationResult } from './verifier.js';
+import type { DefaultApprovalPolicy } from './approval-policy.js';
+import type { CompactionResult } from './context-compactor.js';
 import type {
   AnyRuntimeEvent,
   Approval,
@@ -17,6 +19,13 @@ import type { AgentSkill } from './skill.js';
 import type { McpBridge } from './mcp-bridge.js';
 
 export interface AppServerContract {
+  setApprovalPolicy?(policy: DefaultApprovalPolicy): void;
+  getApprovalPolicy?(): DefaultApprovalPolicy;
+  setEnablePowershellExecution?(enabled: boolean): void;
+  isPowershellExecutionEnabled?(): boolean;
+  setMaxHistoryRounds?(rounds: number): void;
+  getMaxHistoryRounds?(): number;
+  compactThreadMessages?(threadId: string): CompactionResult;
   createThread(input: CreateThreadInput): Thread;
   startTurn(input: StartTurnInput): Turn;
   startTurnAsync?(input: StartTurnInput): Promise<Turn>;
@@ -34,6 +43,8 @@ export interface AppServerContract {
   getSkill(id: string): AgentSkill | undefined;
   setThreadSkill(threadId: string, skillId: string): void;
   getThreadSkill(threadId: string): AgentSkill | undefined;
+  scanWorkspaceSkills(workspacePath: string): readonly AgentSkill[];
+  reloadWorkspace(workspacePath: string): Promise<void>;
   getMcpBridge(): McpBridge;
   respondApproval(input: RespondApprovalInput): Approval;
   pause(threadId: string): void;
@@ -66,6 +77,34 @@ export class AppServer implements AppServerContract {
 
   public constructor(options: RuntimeEngineOptions = {}) {
     this.runtime = new RuntimeEngine(options);
+  }
+
+  public setApprovalPolicy(policy: DefaultApprovalPolicy): void {
+    this.runtime.setApprovalPolicy(policy);
+  }
+
+  public getApprovalPolicy(): DefaultApprovalPolicy {
+    return this.runtime.getApprovalPolicy();
+  }
+
+  public setEnablePowershellExecution(enabled: boolean): void {
+    this.runtime.setEnablePowershellExecution(enabled);
+  }
+
+  public isPowershellExecutionEnabled(): boolean {
+    return this.runtime.isPowershellExecutionEnabled();
+  }
+
+  public setMaxHistoryRounds(rounds: number): void {
+    this.runtime.setMaxHistoryRounds(rounds);
+  }
+
+  public getMaxHistoryRounds(): number {
+    return this.runtime.getMaxHistoryRounds();
+  }
+
+  public compactThreadMessages(threadId: string): CompactionResult {
+    return this.runtime.compactThreadMessages(threadId);
   }
 
   public createThread(input: CreateThreadInput): Thread {
@@ -110,6 +149,15 @@ export class AppServer implements AppServerContract {
 
   public getThreadSkill(threadId: string): AgentSkill | undefined {
     return this.runtime.getThreadSkill(threadId);
+  }
+
+  public scanWorkspaceSkills(workspacePath: string): readonly AgentSkill[] {
+    return this.runtime.scanWorkspaceSkills(workspacePath);
+  }
+
+  public async reloadWorkspace(workspacePath: string): Promise<void> {
+    this.runtime.scanWorkspaceSkills(workspacePath);
+    await this.runtime.getMcpBridge().loadFromConfig({ workspacePath });
   }
 
   public getMcpBridge(): McpBridge {

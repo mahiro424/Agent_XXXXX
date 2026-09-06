@@ -124,7 +124,7 @@ describe('demo-home UI contract', () => {
     expect(controller.view()).toMatchObject({
       state: 'disabled',
       canSubmit: false,
-      disabledReason: 'Live Model 尚未配置，当前可使用 Fake Model Demo',
+      disabledReason: '模型服务尚未配置，请检查 API Key 配置与网络连接',
       taskInput: '读取销售数据并生成周报',
     });
   });
@@ -153,7 +153,8 @@ describe('demo-home UI contract', () => {
     expect(homeMarkup).toContain('data-category="excel"');
     expect(homeMarkup).toContain('data-category="word"');
     expect(homeMarkup).toContain('Office-自动合并多表与公式汇总');
-    expect(homeMarkup).toContain('沙箱写保护: 仅限 artifacts/ 目录');
+    expect(homeMarkup).toContain('自动接受编辑 (仅工作区)');
+    expect(homeMarkup).not.toContain('沙箱写保护: 仅限 artifacts/ 目录');
   });
 
   it('renders plan approval controls and escaped event timeline entries', () => {

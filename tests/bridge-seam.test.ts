@@ -11,7 +11,7 @@ import type {
   DesktopBridgeAdapter,
 } from '../src/runtime/bridge.js';
 
-class FakeBridgeAdapter implements DesktopBridgeAdapter {
+class DeterministicBridgeAdapter implements DesktopBridgeAdapter {
   public readonly requests: BridgeRequest[] = [];
 
   public invoke(request: BridgeRequest): BridgeResponse {
@@ -73,7 +73,7 @@ describe('Optional Windows Bridge contract', () => {
   });
 
   it('requires a prior Sandbox decision before delegating to a sidecar', () => {
-    const adapter = new FakeBridgeAdapter();
+    const adapter = new DeterministicBridgeAdapter();
     const bridge = new OptionalDesktopBridge({ enabled: true, adapter });
     const response = bridge.invoke(
       request('open_output_directory', {
@@ -88,7 +88,7 @@ describe('Optional Windows Bridge contract', () => {
   });
 
   it('delegates allowed capabilities with task/turn/event correlation', () => {
-    const adapter = new FakeBridgeAdapter();
+    const adapter = new DeterministicBridgeAdapter();
     const bridge = new OptionalDesktopBridge({ enabled: true, adapter });
 
     const opened = bridge.invoke(
@@ -116,7 +116,7 @@ describe('Optional Windows Bridge contract', () => {
       errorCode: 'bridge_unavailable',
     });
 
-    const adapter = new FakeBridgeAdapter();
+    const adapter = new DeterministicBridgeAdapter();
     const bridge = new OptionalDesktopBridge({ enabled: true, adapter });
     expect(
       bridge.invoke(request('open_output_directory')),

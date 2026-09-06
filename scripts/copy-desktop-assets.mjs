@@ -22,3 +22,10 @@ const source = join(projectRoot, '..', 'src', 'desktop', 'index.html');
 const destination = join(distRoot, 'desktop', 'index.html');
 mkdirSync(dirname(destination), { recursive: true });
 copyFileSync(source, destination);
+
+const cssSource = join(projectRoot, '..', 'src', 'desktop', 'styles.css');
+const cssDestination = join(distRoot, 'desktop', 'styles.css');
+if (existsSync(cssSource)) {
+  copyFileSync(cssSource, cssDestination);
+}
+

@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AppServer } from '../src/runtime/app-server.js';
+import { EvidenceVerifier } from '../src/runtime/verifier.js';
+import type { VerificationRequest, VerificationResult } from '../src/runtime/verifier.js';
 import type { AnyRuntimeEvent } from '../src/runtime/protocol.js';
 
 function approvalIdFor(events: readonly AnyRuntimeEvent[]): string {
@@ -69,7 +71,12 @@ describe('App Server Seam', () => {
   });
 
   it('blocks a new turn after reconciliation is required', () => {
-    const server = new AppServer({ scenario: { tool: 'reconciliation_required' } });
+    class ReconciliationEvidenceVerifier extends EvidenceVerifier {
+      public override verify(request: VerificationRequest): VerificationResult {
+        return super.verify({ ...request, reconciliationRequired: true });
+      }
+    }
+    const server = new AppServer({ evidenceVerifier: new ReconciliationEvidenceVerifier() });
     const thread = server.createThread({ workspaceId: 'demo-workspace' });
     server.startTurn({ threadId: thread.id, input: '写入报告' });
     const approvalId = approvalIdFor(server.listEvents(thread.id));

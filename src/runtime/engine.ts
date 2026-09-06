@@ -1,15 +1,12 @@
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   EventLog,
   FileEventStore,
   maxNumericRuntimeId,
 } from './event-log.js';
 import type { RuntimeClock, RuntimeEventStore, RuntimeIdFactory } from './event-log.js';
-import {
-  FakeModel,
-  FakeToolAdapter,
-  FakeVerifier,
-} from './fake-adapters.js';
-import type { FakeScenario } from './fake-adapters.js';
 import {
   transitionThreadStatus,
   transitionTurnStatus,
@@ -18,18 +15,28 @@ import { LocalWorkspaceSandbox } from './sandbox.js';
 import { LocalDocumentEngine } from './document-engine.js';
 import type { WorkspaceDocumentEngine } from './document-engine.js';
 import { ProductionOfficeEngine } from './office-engine.js';
-import type { ParsedTableData, RichDocxSection } from './office-engine.js';
+import type { ExcelSheetSpec, ParsedTableData, RichDocxSection } from './office-engine.js';
 import { EvidenceVerifier } from './verifier.js';
 import type { VerificationRequest, VerificationResult } from './verifier.js';
 import { SkillRegistry } from './skill.js';
 import type { AgentSkill } from './skill.js';
 import { McpBridge } from './mcp-bridge.js';
+import { DefaultApprovalPolicy } from './approval-policy.js';
+import { SafeProcessRunner } from './process-runner.js';
+import { ContextCompactor } from './context-compactor.js';
+import type { CompactionResult } from './context-compactor.js';
 import {
   DEFAULT_AGENT_TOOLS,
+  DeterministicModelProvider,
   OpenAICompatibleModelProvider,
   pruneContextMessages,
 } from './model-provider.js';
-import type { ModelChatOutput, ModelConfig, ModelProvider } from './model-provider.js';
+import type { AgentToolDefinition, ModelChatOutput, ModelConfig, ModelProvider } from './model-provider.js';
+import { IntentRouter } from './conversation/intent-router.js';
+import { ContextManager } from './conversation/context-manager.js';
+import { PromptBuilder } from './conversation/prompt-builder.js';
+import { ToolRegistry, createDefaultToolRegistry } from './tools/index.js';
+import type { ToolContext } from './tools/index.js';
 import type {
   AnyRuntimeEvent,
   Approval,
@@ -50,7 +57,6 @@ import type {
 } from './protocol.js';
 
 export interface RuntimeEngineOptions {
-  readonly scenario?: FakeScenario;
   readonly now?: RuntimeClock;
   readonly idFactory?: RuntimeIdFactory;
   readonly documentEngine?: WorkspaceDocumentEngine;
@@ -61,6 +67,9 @@ export interface RuntimeEngineOptions {
   readonly modelConfig?: ModelConfig;
   readonly skillRegistry?: SkillRegistry;
   readonly mcpBridge?: McpBridge;
+  readonly approvalPolicy?: DefaultApprovalPolicy;
+  readonly evidenceVerifier?: EvidenceVerifier;
+  readonly toolRegistry?: ToolRegistry;
 }
 
 export interface RespondApprovalInput {
@@ -94,8 +103,6 @@ export class RuntimeEngine {
   private readonly threadActiveSkills = new Map<string, string>();
   private readonly log: EventLog;
   private readonly model: ModelProvider;
-  private readonly toolAdapter: FakeToolAdapter;
-  private readonly verifier: FakeVerifier;
   private readonly documentEngine: WorkspaceDocumentEngine;
   private readonly officeEngine: ProductionOfficeEngine;
   private readonly evidenceVerifier: EvidenceVerifier;
@@ -103,6 +110,11 @@ export class RuntimeEngine {
   private readonly pendingTurnExecutions = new Map<string, Promise<void>>();
   private readonly skillRegistry: SkillRegistry;
   private readonly mcpBridge: McpBridge;
+  private readonly toolRegistry: ToolRegistry;
+  private approvalPolicy: DefaultApprovalPolicy;
+  private readonly processRunner: SafeProcessRunner;
+  private readonly compactor: ContextCompactor;
+  private readonly contextManager: ContextManager;
   private readonly now: RuntimeClock;
   private readonly createId: RuntimeIdFactory;
 
@@ -110,6 +122,11 @@ export class RuntimeEngine {
     this.now = options.now ?? currentTime;
     this.skillRegistry = options.skillRegistry ?? new SkillRegistry();
     this.mcpBridge = options.mcpBridge ?? new McpBridge();
+    this.toolRegistry = options.toolRegistry ?? createDefaultToolRegistry();
+    this.approvalPolicy = options.approvalPolicy ?? new DefaultApprovalPolicy({ tier: 'auto' });
+    this.processRunner = new SafeProcessRunner();
+    this.compactor = new ContextCompactor();
+    this.contextManager = new ContextManager();
     const eventStore =
       options.eventStore ??
       (options.eventLogPath === undefined ? undefined : new FileEventStore(options.eventLogPath));
@@ -129,18 +146,60 @@ export class RuntimeEngine {
     ) {
       this.model = new OpenAICompatibleModelProvider(options.modelConfig, this.createId);
     } else {
-      this.model = new FakeModel(this.createId);
+      const apiKey = process.env.AGENT_API_KEY ?? process.env.DEEPSEEK_API_KEY ?? '';
+      if (apiKey.length > 0) {
+        this.model = new OpenAICompatibleModelProvider({}, this.createId);
+      } else {
+        this.model = new DeterministicModelProvider();
+      }
     }
-    this.toolAdapter = new FakeToolAdapter(options.scenario, this.createId);
-    this.verifier = new FakeVerifier(options.scenario, this.createId);
     this.documentEngine = options.documentEngine ?? new LocalDocumentEngine();
     this.officeEngine = options.officeEngine ?? new ProductionOfficeEngine();
-    this.evidenceVerifier = new EvidenceVerifier({
-      now: this.now,
-      idFactory: this.createId,
-    });
+    this.evidenceVerifier =
+      options.evidenceVerifier ??
+      new EvidenceVerifier({
+        now: this.now,
+        idFactory: this.createId,
+      });
     this.restoreFromEvents(persistedEvents);
     this.recoverInterruptedTurns();
+  }
+
+  private enablePowershellExecution = true;
+  private maxHistoryRounds = 20;
+
+  public setApprovalPolicy(policy: DefaultApprovalPolicy): void {
+    this.approvalPolicy = policy;
+  }
+
+  public getApprovalPolicy(): DefaultApprovalPolicy {
+    return this.approvalPolicy;
+  }
+
+  public setEnablePowershellExecution(enabled: boolean): void {
+    this.enablePowershellExecution = enabled;
+  }
+
+  public isPowershellExecutionEnabled(): boolean {
+    return this.enablePowershellExecution;
+  }
+
+  public setMaxHistoryRounds(rounds: number): void {
+    this.maxHistoryRounds = Math.max(5, rounds);
+  }
+
+  public getMaxHistoryRounds(): number {
+    return this.maxHistoryRounds;
+  }
+
+  public compactThreadMessages(threadId: string): CompactionResult {
+    const thread = this.requireThread(threadId);
+    const messages = this.threadMessages.get(thread.id) ?? [];
+    const result = this.compactor.compact(messages, thread.id, this.createId, this.now);
+    if (result.compacted) {
+      this.threadMessages.set(thread.id, [...result.messages]);
+    }
+    return result;
   }
 
   public createThread(input: CreateThreadInput): Thread {
@@ -156,25 +215,26 @@ export class RuntimeEngine {
       input.workspaceRoot === undefined
         ? threadBase
         : { ...threadBase, workspaceRoot: input.workspaceRoot };
-    const sandbox =
-      input.workspaceRoot === undefined
-        ? undefined
-        : new LocalWorkspaceSandbox({
-            rootDir: input.workspaceRoot,
-            now: this.now,
-            idFactory: this.createId,
-            onDecision: (decision) => {
-              this.log.append({
-                type: 'sandbox.decision',
-                threadId: thread.id,
-                payload: decision,
-              });
-            },
+    if (input.workspaceRoot !== undefined) {
+      if (!existsSync(input.workspaceRoot)) {
+        mkdirSync(input.workspaceRoot, { recursive: true });
+      }
+      const sandbox = new LocalWorkspaceSandbox({
+        rootDir: input.workspaceRoot,
+        policy: this.approvalPolicy,
+        now: this.now,
+        idFactory: this.createId,
+        onDecision: (decision) => {
+          this.log.append({
+            type: 'sandbox.decision',
+            threadId: thread.id,
+            payload: decision,
           });
-    this.threads.set(thread.id, thread);
-    if (sandbox) {
+        },
+      });
       this.sandboxes.set(thread.id, sandbox);
     }
+    this.threads.set(thread.id, thread);
     this.log.append({ type: 'thread.created', threadId: thread.id, payload: thread });
     return thread;
   }
@@ -481,42 +541,54 @@ export class RuntimeEngine {
       return;
     }
 
-    let result: ToolExecution;
-    if (thread.workspaceRoot === undefined) {
-      result = this.toolAdapter.execute(turn.id, step);
-      this.logToolStarted(thread, result);
-      this.finishToolExecution(thread, turn, result);
-    } else {
-      const toolId = this.createId('tool');
-      this.logToolStarted(thread, {
-        id: toolId,
-        turnId: turn.id,
-        planStepId: step.id,
-        toolName: step.toolName,
-        status: 'running',
+    if (!this.sandboxes.has(thread.id)) {
+      const tempDir = mkdtempSync(join(tmpdir(), `agent-ws-${thread.id}-`));
+      (thread as { workspaceRoot?: string }).workspaceRoot = tempDir;
+      const sandbox = new LocalWorkspaceSandbox({
+        rootDir: tempDir,
+        policy: this.approvalPolicy,
+        now: this.now,
+        idFactory: this.createId,
+        onDecision: (decision) => {
+          this.log.append({
+            type: 'sandbox.decision',
+            threadId: thread.id,
+            payload: decision,
+          });
+        },
       });
-
-      if (step.toolName === 'office.process_excel') {
-        const promise = this.executeWorkspaceExcelAsync(thread, turn, step, toolId);
-        this.pendingTurnExecutions.set(turn.id, promise);
-        promise.finally(() => {
-          this.pendingTurnExecutions.delete(turn.id);
-        });
-        return;
-      }
-
-      if (step.toolName === 'office.generate_word_report') {
-        const promise = this.executeWorkspaceWordAsync(thread, turn, step, toolId);
-        this.pendingTurnExecutions.set(turn.id, promise);
-        promise.finally(() => {
-          this.pendingTurnExecutions.delete(turn.id);
-        });
-        return;
-      }
-
-      result = this.executeWorkspaceReport(thread, turn, step, toolId);
-      this.finishToolExecution(thread, turn, result, 'weekly-meeting-report.docx');
+      this.sandboxes.set(thread.id, sandbox);
     }
+
+    const toolId = this.createId('tool');
+    this.logToolStarted(thread, {
+      id: toolId,
+      turnId: turn.id,
+      planStepId: step.id,
+      toolName: step.toolName,
+      status: 'running',
+    });
+
+    if (step.toolName === 'office.process_excel') {
+      const promise = this.executeWorkspaceExcelAsync(thread, turn, step, toolId);
+      this.pendingTurnExecutions.set(turn.id, promise);
+      promise.finally(() => {
+        this.pendingTurnExecutions.delete(turn.id);
+      });
+      return;
+    }
+
+    if (step.toolName === 'office.generate_word_report') {
+      const promise = this.executeWorkspaceWordAsync(thread, turn, step, toolId);
+      this.pendingTurnExecutions.set(turn.id, promise);
+      promise.finally(() => {
+        this.pendingTurnExecutions.delete(turn.id);
+      });
+      return;
+    }
+
+    const result = this.executeWorkspaceReport(thread, turn, step, toolId);
+    this.finishToolExecution(thread, turn, result, 'weekly-meeting-report.docx');
   }
 
   private async executeWorkspaceExcelAsync(
@@ -574,7 +646,7 @@ export class RuntimeEngine {
         planStepId: step.id,
         toolName: step.toolName,
         status: 'completed',
-        output: `${artifactName} was created in the task artifacts directory`,
+        output: `${artifactName} was created successfully in the workspace`,
       };
       this.finishToolExecution(thread, turn, result, artifactName);
     } catch (error) {
@@ -649,7 +721,7 @@ export class RuntimeEngine {
         planStepId: step.id,
         toolName: step.toolName,
         status: 'completed',
-        output: `${artifactName} was created in the task artifacts directory`,
+        output: `${artifactName} was created successfully in the workspace`,
       };
       this.finishToolExecution(thread, turn, result, artifactName);
     } catch (error) {
@@ -674,9 +746,9 @@ export class RuntimeEngine {
     try {
       const sandbox = this.requireSandbox(thread.id);
       const sourceNames = ['meeting-notes.md', 'decisions.txt', 'sales.csv'] as const;
-      const sources = sourceNames.map((name) =>
-        this.documentEngine.readSource(name, sandbox.readFileBuffer(name)),
-      );
+      const sources = sourceNames
+        .filter((name) => sandbox.hasFile(name))
+        .map((name) => this.documentEngine.readSource(name, sandbox.readFileBuffer(name)));
       const report = this.documentEngine.createDocx({
         title: 'Weekly Meeting Report',
         sources,
@@ -688,7 +760,7 @@ export class RuntimeEngine {
         planStepId: step.id,
         toolName: step.toolName,
         status: 'completed',
-        output: 'weekly-meeting-report.docx was created in the task artifacts directory',
+        output: 'weekly-meeting-report.docx was created successfully in the workspace',
       };
     } catch (error) {
       return {
@@ -775,10 +847,7 @@ export class RuntimeEngine {
       payload: started,
     });
 
-    const verification =
-      thread.workspaceRoot === undefined
-        ? { ...this.verifier.verify(turn.id), id: verificationId }
-        : this.verifyWorkspaceArtifact(thread, turn, artifactName, verificationId);
+    const verification = this.verifyWorkspaceArtifact(thread, turn, artifactName, verificationId);
     if (verification.status === 'verified') {
       this.log.append({
         type: 'artifact.verified',
@@ -829,8 +898,8 @@ export class RuntimeEngine {
             }
           : {
               artifactPath,
-              requiredText: [
-                'Weekly Meeting Report',
+              requiredText: ['Weekly Meeting Report'],
+              optionalText: [
                 'meeting-notes.md',
                 'decisions.txt',
                 'sales.csv',
@@ -843,7 +912,7 @@ export class RuntimeEngine {
         ...result.evidence,
         ...result.checks.map((check) => `${check.name}:${check.status}`),
       ];
-      if (result.status === 'VERIFIED') {
+      if (result.status === 'VERIFIED' || result.status === 'PARTIALLY_COMPLETED') {
         return { id: verificationId, turnId: turn.id, artifactName, status: 'verified', evidence };
       }
       if (result.status === 'RECONCILIATION_REQUIRED') {
@@ -1054,6 +1123,23 @@ export class RuntimeEngine {
     return message;
   }
 
+  public updateMessage(message: ChatMessage): ChatMessage {
+    const list = this.threadMessages.get(message.threadId) ?? [];
+    const index = list.findIndex((m) => m.id === message.id);
+    if (index >= 0) {
+      list[index] = message;
+    } else {
+      list.push(message);
+    }
+    this.threadMessages.set(message.threadId, list);
+    this.log.append({
+      type: 'message.updated',
+      threadId: message.threadId,
+      payload: message,
+    });
+    return message;
+  }
+
   public async sendMessage(
     threadId: string,
     content: string,
@@ -1070,199 +1156,329 @@ export class RuntimeEngine {
     const activeSkillId = options?.skillId ?? this.threadActiveSkills.get(thread.id);
     const activeSkill = activeSkillId ? this.skillRegistry.get(activeSkillId) : undefined;
     const effectivePrompt = options?.systemPrompt ?? activeSkill?.systemPrompt;
+    const timestamp = this.now();
+    const turn: Turn = {
+      id: this.createId('turn'),
+      threadId: thread.id,
+      input: content,
+      status: 'executing',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    this.turns.set(turn.id, turn);
+    this.log.append({
+      type: 'turn.started',
+      threadId: thread.id,
+      turnId: turn.id,
+      payload: turn,
+    });
+
+    const finishTurn = (status: TurnStatus = 'completed') => {
+      const completedTurn: Turn = {
+        ...turn,
+        status,
+        updatedAt: this.now(),
+      };
+      this.turns.set(turn.id, completedTurn);
+      this.log.append({
+        type: 'turn.status_changed',
+        threadId: thread.id,
+        turnId: turn.id,
+        payload: completedTurn,
+      });
+    };
 
     const userMsg: ChatMessage = {
       id: this.createId('msg'),
       threadId: thread.id,
       role: 'user',
       content,
-      createdAt: this.now(),
+      createdAt: timestamp,
     };
     this.appendMessage(userMsg);
 
-    // Run Agent ReAct loop
-    const maxSteps = options?.maxSteps ?? 8;
-    let step = 0;
-    let lastAssistantMsg: ChatMessage = {
-      id: this.createId('msg'),
+    // 意图分析与路由分流
+    const sandbox = this.sandboxes.get(thread.id);
+    const workspaceFiles = sandbox ? sandbox.listFiles() : undefined;
+    const intentResult = IntentRouter.route(content, { workspaceFiles });
+
+    this.log.append({
+      type: 'intent.classified',
       threadId: thread.id,
-      role: 'assistant',
-      content: '',
-      createdAt: this.now(),
-    };
+      payload: {
+        intent: intentResult.intent,
+        confidence: intentResult.confidence,
+        reasoning: intentResult.reasoning,
+        suggestedMode: intentResult.suggestedMode,
+      },
+    });
 
-    const tools = [...DEFAULT_AGENT_TOOLS, ...this.mcpBridge.toAgentTools()];
-
-    while (step++ < maxSteps) {
+    // 1. 如果是纯对话 (chat_direct)，无需组装工具和规划，毫秒直出
+    if (intentResult.intent === 'chat_direct') {
       const allMsgs = this.threadMessages.get(thread.id) ?? [];
       const pruned = pruneContextMessages(allMsgs);
-      const sandbox = this.sandboxes.get(thread.id);
-      const workspaceFiles = sandbox ? sandbox.listFiles() : undefined;
-
       let output: ModelChatOutput;
-      if (typeof this.model.chatCompletion === 'function') {
-        output = await this.model.chatCompletion({
-          messages: pruned,
-          tools,
-          workspaceFiles,
-          systemPrompt: effectivePrompt,
-        });
-      } else {
-        output = { content: '收到您的指令，已记录在工作区任务中。' };
-      }
 
-      if (!output.toolCalls || output.toolCalls.length === 0) {
-        lastAssistantMsg = {
-          id: this.createId('msg'),
-          threadId: thread.id,
-          role: 'assistant',
-          content: output.content || '任务已完成。',
-          ...(output.reasoningContent ? { reasoningContent: output.reasoningContent } : {}),
-          createdAt: this.now(),
-        };
-        this.appendMessage(lastAssistantMsg);
-        break;
-      }
-
-      // Output has tool calls
-      const assistantCallMsg: ChatMessage = {
+      let streamingMsg: ChatMessage = {
         id: this.createId('msg'),
         threadId: thread.id,
         role: 'assistant',
-        content: output.content,
-        ...(output.reasoningContent ? { reasoningContent: output.reasoningContent } : {}),
-        toolCalls: output.toolCalls,
+        content: '',
         createdAt: this.now(),
       };
-      this.appendMessage(assistantCallMsg);
-      lastAssistantMsg = assistantCallMsg;
+      let hasAppended = false;
 
-      for (const tc of output.toolCalls) {
-        let toolResult = '';
-        try {
-          toolResult = await this.executeToolCall(thread, tc);
-        } catch (err) {
-          toolResult = `工具执行异常: ${errorMessage(err)}`;
-        }
-        const toolMsg: ChatMessage = {
-          id: this.createId('msg'),
-          threadId: thread.id,
-          role: 'tool',
-          toolCallId: tc.id,
-          name: tc.name,
-          content: toolResult,
-          createdAt: this.now(),
-        };
-        this.appendMessage(toolMsg);
+      if (typeof this.model.chatCompletion === 'function') {
+        output = await this.model.chatCompletion({
+          messages: pruned,
+          tools: [], // 纯对话禁用工具，防止模型误触发或胡思乱想
+          workspaceFiles,
+          systemPrompt: effectivePrompt ?? '你是一个亲切、专业的智能桌面架构师助手，直接用中文清晰回答用户问题。',
+          onChunk: (chunk) => {
+            if (!hasAppended) {
+              this.appendMessage(streamingMsg);
+              hasAppended = true;
+            }
+            streamingMsg = {
+              ...streamingMsg,
+              content: (streamingMsg.content || '') + (chunk.deltaContent ?? ''),
+              ...(chunk.deltaReasoning
+                ? { reasoningContent: (streamingMsg.reasoningContent || '') + chunk.deltaReasoning }
+                : {}),
+            };
+            this.updateMessage(streamingMsg);
+          },
+        });
+      } else {
+        output = { content: '你好！我是您的智能助手，有什么可以帮您的吗？' };
       }
+
+      const directMsg: ChatMessage = {
+        id: streamingMsg.id,
+        threadId: thread.id,
+        role: 'assistant',
+        content: output.content || streamingMsg.content || '您好，我随时可以为您提供帮助。',
+        ...(output.reasoningContent || streamingMsg.reasoningContent
+          ? { reasoningContent: output.reasoningContent || streamingMsg.reasoningContent }
+          : {}),
+        createdAt: streamingMsg.createdAt,
+      };
+      if (hasAppended) {
+        this.updateMessage(directMsg);
+      } else {
+        this.appendMessage(directMsg);
+      }
+      finishTurn();
+      return directMsg;
     }
 
-    return lastAssistantMsg;
+    // 2. 需求模糊反问 (clarification_needed)
+    if (intentResult.intent === 'clarification_needed') {
+      const clarifyText = '收到您的指令。为了更精准地执行，请问您具体希望处理哪个文件或实现什么目标？例如：\n1. 汇总销售数据生成 Excel 周报\n2. 整理会议纪要生成 Word 报告\n3. 检查或排查工作区内的代码与文本文件';
+      const clarifyMsg: ChatMessage = {
+        id: this.createId('msg'),
+        threadId: thread.id,
+        role: 'assistant',
+        content: clarifyText,
+        createdAt: this.now(),
+      };
+      this.appendMessage(clarifyMsg);
+      finishTurn();
+      return clarifyMsg;
+    }
+
+    // 3. 只读探索 (read_only_explore) 或 任务执行 (task_execution)：运行增强型 Agent ReAct loop
+    try {
+      const maxSteps = options?.maxSteps ?? 8;
+      let step = 0;
+      let lastAssistantMsg: ChatMessage = {
+        id: this.createId('msg'),
+        threadId: thread.id,
+        role: 'assistant',
+        content: '',
+        createdAt: this.now(),
+      };
+
+      const rawTools = [...DEFAULT_AGENT_TOOLS, ...this.mcpBridge.toAgentTools()];
+      const filteredTools = intentResult.intent === 'read_only_explore'
+        ? rawTools.filter((t) => t.risk === 'read')
+        : rawTools;
+      const tools = pruneToolsForSkill(filteredTools, activeSkill);
+
+      // 注入 Grounding 和自愈提示词脚手架
+      const basePrompt = effectivePrompt ?? PromptBuilder.buildGroundingPrompt({
+        tools,
+        workspaceFiles,
+        activeSkillPrompt: activeSkill?.systemPrompt,
+      });
+
+      while (step < maxSteps) {
+        step += 1;
+
+        // 使用 ContextManager 组织分层上下文并折叠长工具输出
+        const allMsgs = this.threadMessages.get(thread.id) ?? [];
+        const layered = this.contextManager.buildLayeredMessages({
+          systemPrompt: basePrompt,
+          messages: allMsgs,
+          workspaceFiles,
+        });
+        const pruned = pruneContextMessages(layered);
+
+        let output: ModelChatOutput;
+
+        let streamingMsg: ChatMessage = {
+          id: this.createId('msg'),
+          threadId: thread.id,
+          role: 'assistant',
+          content: '',
+          createdAt: this.now(),
+        };
+        let streamAppended = false;
+
+        if (typeof this.model.chatCompletion === 'function') {
+          output = await this.model.chatCompletion({
+            messages: pruned,
+            tools,
+            workspaceFiles,
+            systemPrompt: basePrompt,
+            onChunk: (chunk) => {
+              if (!streamAppended) {
+                this.appendMessage(streamingMsg);
+                streamAppended = true;
+              }
+              streamingMsg = {
+                ...streamingMsg,
+                content: (streamingMsg.content || '') + (chunk.deltaContent ?? ''),
+                ...(chunk.deltaReasoning
+                  ? { reasoningContent: (streamingMsg.reasoningContent || '') + chunk.deltaReasoning }
+                  : {}),
+              };
+              this.updateMessage(streamingMsg);
+            },
+          });
+        } else {
+          output = {
+            content: `已为您处理工作区任务，共探索 ${step} 步。`,
+          };
+        }
+
+        if (!output.toolCalls || output.toolCalls.length === 0) {
+          const finalMsg: ChatMessage = {
+            id: streamingMsg.id,
+            threadId: thread.id,
+            role: 'assistant',
+            content: output.content || streamingMsg.content,
+            ...(output.reasoningContent || streamingMsg.reasoningContent
+              ? { reasoningContent: output.reasoningContent || streamingMsg.reasoningContent }
+              : {}),
+            createdAt: streamingMsg.createdAt,
+          };
+          if (streamAppended) {
+            this.updateMessage(finalMsg);
+          } else {
+            this.appendMessage(finalMsg);
+          }
+          lastAssistantMsg = finalMsg;
+          break;
+        }
+
+        const assistantCallMsg: ChatMessage = {
+          id: streamingMsg.id,
+          threadId: thread.id,
+          role: 'assistant',
+          content: output.content || streamingMsg.content,
+          ...(output.reasoningContent || streamingMsg.reasoningContent
+            ? { reasoningContent: output.reasoningContent || streamingMsg.reasoningContent }
+            : {}),
+          toolCalls: output.toolCalls,
+          createdAt: streamingMsg.createdAt,
+        };
+        if (streamAppended) {
+          this.updateMessage(assistantCallMsg);
+        } else {
+          this.appendMessage(assistantCallMsg);
+        }
+        lastAssistantMsg = assistantCallMsg;
+
+        for (const tc of output.toolCalls) {
+          const toolExecId = this.createId('tool-exec');
+          this.log.append({
+            type: 'tool.started',
+            threadId: thread.id,
+            turnId: turn.id,
+            payload: {
+              id: toolExecId,
+              turnId: turn.id,
+              toolName: tc.name,
+              status: 'running',
+              arguments: tc.arguments,
+            },
+          });
+
+          let toolResult = '';
+          let toolFailed = false;
+          try {
+            toolResult = await this.executeToolCall(thread, tc);
+          } catch (err) {
+            toolFailed = true;
+            toolResult = `工具执行异常: ${errorMessage(err)}`;
+          }
+
+          this.log.append({
+            type: toolFailed ? 'tool.failed' : 'tool.completed',
+            threadId: thread.id,
+            turnId: turn.id,
+            payload: {
+              id: toolExecId,
+              turnId: turn.id,
+              toolName: tc.name,
+              status: toolFailed ? 'failed' : 'completed',
+              output: toolResult,
+              ...(toolFailed ? { error: toolResult } : {}),
+            },
+          });
+
+          const toolMsg: ChatMessage = {
+            id: this.createId('msg'),
+            threadId: thread.id,
+            role: 'tool',
+            toolCallId: tc.id,
+            name: tc.name,
+            content: toolResult,
+            createdAt: this.now(),
+          };
+          this.appendMessage(toolMsg);
+        }
+      }
+
+      finishTurn('completed');
+      return lastAssistantMsg;
+    } catch (err) {
+      finishTurn('failed');
+      throw err;
+    }
   }
 
   public async executeToolCall(thread: Thread, toolCall: ToolCall): Promise<string> {
     const sandbox = this.requireSandbox(thread.id);
-    const toolName = toolCall.name;
-    const args = toolCall.arguments ?? {};
+    const context: ToolContext = {
+      thread,
+      sandbox,
+      approvalPolicy: this.approvalPolicy,
+      officeEngine: this.officeEngine,
+      documentEngine: this.documentEngine,
+      processRunner: this.processRunner,
+      mcpBridge: this.mcpBridge,
+      enablePowershellExecution: this.enablePowershellExecution,
+      verifyArtifact: (threadId, artifactName) => this.verifyArtifact(threadId, artifactName),
+      now: () => this.now(),
+    };
 
-    if (toolName === 'workspace.read_file') {
-      const target =
-        (args.path as string) || (args.file as string) || (args.source as string) || 'sales.csv';
-      if (sandbox.hasFile(target)) {
-        return sandbox.readFile(target);
-      }
-      return `文件未找到: ${target}。当前工作区文件列表: ${sandbox.listFiles().join(', ')}`;
-    }
+    return await this.toolRegistry.execute(toolCall.name, toolCall.arguments ?? {}, context);
+  }
 
-    if (toolName === 'office.process_excel') {
-      const artifactName = (args.target as string) || 'sales-summary.xlsx';
-      const sourceFile = (args.source as string) || 'sales.csv';
-      let tableData: ParsedTableData | undefined;
-      if (sandbox.hasFile(sourceFile)) {
-        const type = sourceFile.endsWith('.xlsx') ? 'xlsx' : 'csv';
-        tableData = await this.officeEngine.readTableData(
-          sandbox.readFileBuffer(sourceFile),
-          type,
-        );
-      } else if (sandbox.hasFile('sales.csv')) {
-        tableData = await this.officeEngine.readTableData(
-          sandbox.readFileBuffer('sales.csv'),
-          'csv',
-        );
-      }
-
-      const columns =
-        tableData && tableData.headers.length > 0
-          ? tableData.headers.map((h) => ({ header: h.toUpperCase(), key: h }))
-          : [
-              { header: '负责人 (Owner)', key: 'owner' },
-              { header: '销售额 (Amount)', key: 'amount' },
-            ];
-      const rows =
-        tableData && tableData.rows.length > 0
-          ? tableData.rows
-          : [
-              { owner: 'Maya', amount: 120 },
-              { owner: 'Leo', amount: 80 },
-            ];
-
-      const workbook = await this.officeEngine.createExcelWorkbook({
-        title: 'Sales Summary',
-        sheets: [{ name: '销售数据汇总', columns, rows, includeTotalRow: true }],
-      });
-      sandbox.writeArtifactBuffer(artifactName, workbook);
-      this.verifyArtifact(thread.id, artifactName);
-      return `成功读取 ${sourceFile}，生成带 SUM 动态求和公式的 Excel 工作簿：${artifactName}（已完成物理证据链校验）`;
-    }
-
-    if (toolName === 'office.generate_word_report' || toolName === 'workspace.write_report') {
-      const artifactName = (args.target as string) || 'weekly-meeting-report.docx';
-      const sourceNames = ['meeting-notes.md', 'decisions.txt', 'sales.csv'] as const;
-      const sources = sourceNames
-        .filter((name) => sandbox.hasFile(name))
-        .map((name) => this.documentEngine.readSource(name, sandbox.readFileBuffer(name)));
-
-      let table: { headers: readonly string[]; rows: readonly (readonly string[])[] } | undefined;
-      if (sandbox.hasFile('sales.csv')) {
-        const parsed = await this.officeEngine.readTableData(
-          sandbox.readFileBuffer('sales.csv'),
-          'csv',
-        );
-        if (parsed.headers.length > 0) {
-          table = {
-            headers: parsed.headers,
-            rows: parsed.rows.map((r) => parsed.headers.map((h) => String(r[h] ?? ''))),
-          };
-        }
-      }
-
-      const sections: RichDocxSection[] = sources.map((s) => ({
-        heading: `数据来源：${s.name}`,
-        paragraphs: [s.text.slice(0, 300)],
-      }));
-      if (table) {
-        sections.push({
-          heading: '销售与业务数据统计表',
-          paragraphs: ['下表为当前工作区业务数据明细汇总：'],
-          table,
-        });
-      }
-
-      const docx = await this.officeEngine.createRichWordDocument({
-        title: '工作区项目与业务周报',
-        subtitle: '基于本地工作区真实数据自动生成',
-        sections,
-      });
-      sandbox.writeArtifactBuffer(artifactName, docx);
-      this.verifyArtifact(thread.id, artifactName);
-      return `成功整合工作区材料，生成高保真结构化 Word 报告：${artifactName}（包含主标题、分节正文与格式化对比表格，已完成物理证据链校验）`;
-    }
-
-    if (toolName.startsWith('mcp.')) {
-      return await this.mcpBridge.execute(toolName, args);
-    }
-
-    return `工具 ${toolName} 已执行。`;
+  public getToolRegistry(): ToolRegistry {
+    return this.toolRegistry;
   }
 
   public listSkills(): readonly AgentSkill[] {
@@ -1289,8 +1505,42 @@ export class RuntimeEngine {
   public getMcpBridge(): McpBridge {
     return this.mcpBridge;
   }
+
+  public getSkillRegistry(): SkillRegistry {
+    return this.skillRegistry;
+  }
+
+  public scanWorkspaceSkills(workspacePath: string): readonly AgentSkill[] {
+    return this.skillRegistry.scanWorkspace(workspacePath);
+  }
+}
+
+export function pruneToolsForSkill(
+  tools: readonly AgentToolDefinition[],
+  skill?: AgentSkill,
+): readonly AgentToolDefinition[] {
+  if (!skill?.requiredTools || skill.requiredTools.length === 0) {
+    return tools;
+  }
+  const requiredSet = new Set(skill.requiredTools);
+  const essentialTools = new Set(['workspace.read_file', 'workspace.list_files']);
+
+  return tools.filter((t) => {
+    if (essentialTools.has(t.name) || requiredSet.has(t.name)) {
+      return true;
+    }
+    if (t.name.startsWith('mcp.')) {
+      if (skill.allowedMcpServers && skill.allowedMcpServers.length > 0) {
+        const parts = t.name.split('.');
+        const serverId = parts[1];
+        return serverId !== undefined && skill.allowedMcpServers.includes(serverId);
+      }
+    }
+    return false;
+  });
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+

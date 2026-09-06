@@ -19,7 +19,7 @@ export type AppRoute =
   | 'task-plan';
 
 export type ShellReadiness = 'default' | 'empty' | 'disabled';
-export type ShellModelMode = 'fake' | 'live';
+export type ShellModelMode = 'live';
 export type ShellNetworkStatus = 'disabled' | 'enabled';
 
 export interface AppShellView {
@@ -63,7 +63,7 @@ export class AppShellController {
 
   public constructor(options: AppShellOptions) {
     this.server = options.server;
-    this.modelMode = options.modelMode ?? 'fake';
+    this.modelMode = options.modelMode ?? 'live';
     this.modelConnected = options.modelConnected ?? true;
     this.sandboxReady = options.sandboxReady ?? false;
     this.network = options.network ?? 'disabled';

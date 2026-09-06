@@ -33,7 +33,7 @@ function approvalIdFor(events: readonly AnyRuntimeEvent[]): string {
   return event.payload.id;
 }
 
-function runFakeTurn(logPath: string): { server: AppServer; threadId: string; turnId: string } {
+function runPersistentTurn(logPath: string): { server: AppServer; threadId: string; turnId: string } {
   const server = new AppServer({ eventLogPath: logPath });
   const thread = server.createThread({ workspaceId: 'persistent-workspace' });
   const turn = server.startTurn({ threadId: thread.id, input: '生成报告' });
@@ -43,7 +43,7 @@ function runFakeTurn(logPath: string): { server: AppServer; threadId: string; tu
 describe('Runtime persistence and crash recovery', () => {
   it('persists JSONL events and restores threads, turns, and pending approvals', () => {
     const logPath = persistentLogPath();
-    const first = runFakeTurn(logPath);
+    const first = runPersistentTurn(logPath);
     const beforeRestart = first.server.listAllEvents();
 
     expect(readFileSync(logPath, 'utf8').trim().split('\n')).toHaveLength(beforeRestart.length);
@@ -70,7 +70,7 @@ describe('Runtime persistence and crash recovery', () => {
   it('converges an interrupted execution to RECONCILIATION_REQUIRED without replaying it', () => {
     for (const stopEvent of ['tool.started', 'artifact.verification_started'] as const) {
       const logPath = persistentLogPath();
-      const first = runFakeTurn(logPath);
+      const first = runPersistentTurn(logPath);
       first.server.respondApproval({
         approvalId: approvalIdFor(first.server.listEvents(first.threadId)),
         decision: 'approved',
@@ -100,7 +100,7 @@ describe('Runtime persistence and crash recovery', () => {
 
   it('ignores only a torn final JSONL record while preserving complete history', () => {
     const logPath = persistentLogPath();
-    const first = runFakeTurn(logPath);
+    const first = runPersistentTurn(logPath);
     const completeEvents = first.server.listAllEvents();
     appendFileSync(logPath, '{"id":"torn-event', 'utf8');
 

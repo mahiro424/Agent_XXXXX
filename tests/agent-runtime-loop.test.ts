@@ -156,7 +156,6 @@ describe('Agent Runtime Loop & Conversation Stream', () => {
         permissionMode: 'full-access',
         liveModelAvailable: false,
       });
-      session.setModelMode('fake');
       await session.selectWorkspace(workspace);
 
       // 第一轮：打招呼

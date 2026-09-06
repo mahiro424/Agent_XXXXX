@@ -1,13 +1,18 @@
-import { existsSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
 import { AppServer } from '../runtime/app-server.js';
 import type { AppServerContract } from '../runtime/app-server.js';
 import type {
   AnyRuntimeEvent,
   Approval,
+  ApprovalTier,
+  AttachmentItem,
   ChatMessage,
   Plan,
+  ReasoningEffort,
   Thread,
+  TokenUsageSnapshot,
   Turn,
 } from '../runtime/protocol.js';
 import type { AgentSkill } from '../runtime/skill.js';
@@ -15,8 +20,17 @@ import { AppShellController } from '../ui/app-shell.js';
 import type { AppRoute, AppShellView, ShellModelMode } from '../ui/app-shell.js';
 import { DemoHomeController } from '../ui/demo-home.js';
 import type { DemoHomeView, DemoModelMode, FilePermissionMode } from '../ui/demo-home.js';
-import { FakeModel } from '../runtime/fake-adapters.js';
-import { OpenAICompatibleModelProvider } from '../runtime/model-provider.js';
+import { DeterministicModelProvider, OpenAICompatibleModelProvider } from '../runtime/model-provider.js';
+import { AttachmentReader } from '../runtime/attachment-reader.js';
+import { DefaultApprovalPolicy } from '../runtime/approval-policy.js';
+import { SettingsStore } from '../runtime/settings-store.js';
+import type {
+  AgentSettings,
+  ConnectionTestResult,
+  ModelServiceConfig,
+} from '../runtime/settings-store.js';
+import type { McpServerConfig, McpServerState } from '../runtime/mcp-types.js';
+import { McpProcessSupervisor } from '../runtime/mcp-process-supervisor.js';
 import type {
   ModelChatInput,
   ModelChatOutput,
@@ -28,57 +42,74 @@ import type { RuntimeIdFactory } from '../runtime/event-log.js';
 
 export const BUILTIN_DEEPSEEK_CONFIG: ModelConfig = {
   provider: 'openai-compatible',
-  apiKey: 'sk-34f8e866cc4741d4aa77a5d8a2ce3942',
-  baseURL: 'https://api.deepseek.com',
-  modelName: 'deepseek-v4-flash',
+  apiKey: process.env.AGENT_API_KEY ?? process.env.DEEPSEEK_API_KEY ?? '',
+  baseURL: process.env.AGENT_BASE_URL ?? 'https://api.deepseek.com',
+  modelName: process.env.AGENT_MODEL_NAME ?? 'deepseek-v4-flash',
 };
 
 export class SwitchableModelProvider implements ModelProvider {
-  private mode: DemoModelMode = 'live';
-  private readonly fakeModel: FakeModel;
-  private readonly liveModel: OpenAICompatibleModelProvider;
+  private mode: string = 'live';
+  private liveModel?: OpenAICompatibleModelProvider | undefined;
+  private readonly fallbackModel: DeterministicModelProvider;
+  private readonly createId: RuntimeIdFactory;
 
   public constructor(config: ModelConfig, idFactory?: RuntimeIdFactory) {
     let counter = 0;
-    const createId: RuntimeIdFactory = idFactory ?? ((prefix) => `${prefix}-${++counter}`);
-    this.fakeModel = new FakeModel(createId);
-    this.liveModel = new OpenAICompatibleModelProvider(config, createId);
+    this.createId = idFactory ?? ((prefix) => `${prefix}-${++counter}`);
+    this.fallbackModel = new DeterministicModelProvider(undefined, this.createId);
+    if (config.apiKey && config.apiKey.length > 0) {
+      this.liveModel = new OpenAICompatibleModelProvider(config, this.createId);
+    }
   }
 
-  public setMode(mode: DemoModelMode): void {
+  public updateConfig(config: ModelConfig): void {
+    if (config.apiKey && config.apiKey.length > 0) {
+      this.liveModel = new OpenAICompatibleModelProvider(config, this.createId);
+    } else {
+      this.liveModel = undefined;
+    }
+  }
+
+  public setMode(mode: string): void {
     this.mode = mode;
   }
 
-  public getMode(): DemoModelMode {
+  public getMode(): string {
     return this.mode;
   }
 
   public setModelName(modelName: string): void {
-    (this.liveModel.config as { modelName: string }).modelName = modelName;
+    if (this.liveModel) {
+      (this.liveModel.config as { modelName: string }).modelName = modelName;
+    }
+  }
+
+  public setReasoningEffort(effort: ReasoningEffort): void {
+    if (this.liveModel) {
+      (this.liveModel.config as { reasoningEffort?: ReasoningEffort }).reasoningEffort = effort;
+    }
   }
 
   public async proposePlan(input: ModelPlanInput): Promise<Plan> {
-    if (this.mode === 'fake') {
-      return this.fakeModel.proposePlan(input);
+    if (this.mode === 'live' && this.liveModel) {
+      try {
+        return await this.liveModel.proposePlan(input);
+      } catch {
+        return this.fallbackModel.proposePlan(input);
+      }
     }
-    try {
-      return await this.liveModel.proposePlan(input);
-    } catch (err) {
-      console.warn('Live DeepSeek API call failed, falling back to smart plan:', err);
-      return this.fakeModel.proposePlan(input);
-    }
+    return this.fallbackModel.proposePlan(input);
   }
 
   public async chatCompletion(input: ModelChatInput): Promise<ModelChatOutput> {
-    if (this.mode === 'fake') {
-      return this.fakeModel.chatCompletion(input);
+    if (this.mode === 'live' && this.liveModel) {
+      try {
+        return await this.liveModel.chatCompletion(input);
+      } catch {
+        return this.fallbackModel.chatCompletion(input);
+      }
     }
-    try {
-      return await this.liveModel.chatCompletion(input);
-    } catch (err) {
-      console.error('Live DeepSeek API chatCompletion error:', err);
-      return this.fakeModel.chatCompletion(input);
-    }
+    return this.fallbackModel.chatCompletion(input);
   }
 }
 
@@ -135,6 +166,30 @@ export interface DesktopTurnView {
   readonly updatedAt: string;
 }
 
+export interface DesktopSessionMetadata {
+  readonly id: string;
+  readonly title: string;
+  readonly projectId?: string | undefined;
+  readonly isPinned?: boolean | undefined;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly lastSnippet?: string | undefined;
+}
+
+export interface DesktopProject {
+  readonly id: string;
+  readonly name: string;
+  readonly folderPath: string;
+  readonly createdAt: string;
+  readonly isExpanded?: boolean | undefined;
+}
+
+export interface DesktopExecutionState {
+  readonly status: 'idle' | 'routing' | 'thinking' | 'tool_executing';
+  readonly currentTool?: string | undefined;
+  readonly detail?: string | undefined;
+}
+
 export interface DesktopSnapshot {
   readonly shell: AppShellView;
   readonly home: DemoHomeView;
@@ -150,6 +205,23 @@ export interface DesktopSnapshot {
   readonly messages?: readonly ChatMessage[];
   readonly skills?: readonly AgentSkill[];
   readonly activeSkillId?: string;
+  readonly sessions?: readonly DesktopSessionMetadata[] | undefined;
+  readonly projects?: readonly DesktopProject[] | undefined;
+  readonly activeSessionId?: string | undefined;
+  readonly settings?: AgentSettings | undefined;
+  readonly activeServiceName?: string | undefined;
+  readonly activeModelName?: string | undefined;
+  readonly mcpServers?: readonly McpServerState[] | undefined;
+  readonly isGenerating?: boolean | undefined;
+  readonly executionState?: DesktopExecutionState | undefined;
+}
+
+export interface McpTestResult {
+  readonly success: boolean;
+  readonly latencyMs: number;
+  readonly toolCount: number;
+  readonly tools: readonly string[];
+  readonly error?: string | undefined;
 }
 
 export type DesktopApprovalDecision = 'approved' | 'rejected';
@@ -168,6 +240,28 @@ export interface DesktopApi {
   submitPlan(): Promise<DesktopSnapshot>;
   respondApproval(decision: DesktopApprovalDecision): Promise<DesktopSnapshot>;
   stopTask(): Promise<DesktopSnapshot>;
+  addAttachment(item: AttachmentItem): Promise<DesktopSnapshot>;
+  removeAttachment(id: string): Promise<DesktopSnapshot>;
+  clearAttachments(): Promise<DesktopSnapshot>;
+  setReasoningEffort(effort: ReasoningEffort): Promise<DesktopSnapshot>;
+  compactContext(): Promise<DesktopSnapshot>;
+  createSession(options?: { projectId?: string | undefined; title?: string | undefined; folderPath?: string | undefined } | undefined): Promise<DesktopSnapshot>;
+  switchSession(sessionId: string): Promise<DesktopSnapshot>;
+  togglePinSession(sessionId: string): Promise<DesktopSnapshot>;
+  renameSession(sessionId: string, newTitle: string): Promise<DesktopSnapshot>;
+  deleteSession(sessionId: string): Promise<DesktopSnapshot>;
+  createProject(name: string, folderPath: string): Promise<DesktopSnapshot>;
+  deleteProject(projectId: string): Promise<DesktopSnapshot>;
+  toggleProjectExpanded(projectId: string): Promise<DesktopSnapshot>;
+  promptSelectFolder(): Promise<string | undefined>;
+  getSettings(): Promise<AgentSettings>;
+  saveSettings(patch: Partial<AgentSettings>): Promise<DesktopSnapshot>;
+  testModelConnection(service: Partial<ModelServiceConfig>): Promise<ConnectionTestResult>;
+  openConfigDir(): Promise<void>;
+  testMcpConnection(config: McpServerConfig, serverId?: string): Promise<McpTestResult>;
+  saveMcpServer(id: string, config: McpServerConfig): Promise<DesktopSnapshot>;
+  deleteMcpServer(id: string): Promise<DesktopSnapshot>;
+  reloadMcpServers(): Promise<DesktopSnapshot>;
 }
 
 export interface DesktopSessionOptions {
@@ -176,6 +270,9 @@ export interface DesktopSessionOptions {
   readonly modelConfig?: ModelConfig;
   readonly permissionMode?: FilePermissionMode;
   readonly liveModelAvailable?: boolean;
+  readonly reasoningEffort?: ReasoningEffort;
+  readonly settingsStore?: SettingsStore;
+  readonly configPath?: string;
 }
 
 export class DesktopSession {
@@ -184,18 +281,32 @@ export class DesktopSession {
   private readonly home: DemoHomeController;
   private readonly listeners = new Set<(snapshot: DesktopSnapshot) => void>();
   private readonly switchableModel: SwitchableModelProvider | undefined;
+  private readonly settingsStore: SettingsStore;
   private permissionMode: FilePermissionMode;
   private activeThreadId: string | undefined;
   private activeTurnId: string | undefined;
+  private projects: DesktopProject[] = [];
+  private sessionMeta = new Map<string, DesktopSessionMetadata>();
+  private isGenerating = false;
+  private executionState: DesktopExecutionState = { status: 'idle' };
+  private eventUnsubscribe?: () => void;
 
   public constructor(options: DesktopSessionOptions = {}) {
+    this.settingsStore = options.settingsStore ?? new SettingsStore(options.configPath);
+    const initialSettings = this.settingsStore.load();
     this.permissionMode =
-      options.permissionMode ?? (options.server ? 'ask-approval' : 'full-access');
+      options.permissionMode ?? (options.server ? 'ask-approval' : initialSettings.permissionPolicy);
     const isLiveAvailable = options.liveModelAvailable ?? true;
     if (!options.server) {
-      this.switchableModel = new SwitchableModelProvider(
-        options.modelConfig ?? BUILTIN_DEEPSEEK_CONFIG,
-      );
+      const activeService = this.settingsStore.getActiveService();
+      const resolvedConfig: ModelConfig = options.modelConfig ?? {
+        provider: 'openai-compatible',
+        apiKey: activeService.apiKey,
+        baseURL: activeService.baseURL,
+        modelName: activeService.modelName,
+        ...(activeService.reasoningEffort ? { reasoningEffort: activeService.reasoningEffort } : {}),
+      };
+      this.switchableModel = new SwitchableModelProvider(resolvedConfig);
       this.server = new AppServer({
         ...(options.eventLogPath === undefined ? {} : { eventLogPath: options.eventLogPath }),
         modelProvider: this.switchableModel,
@@ -205,7 +316,7 @@ export class DesktopSession {
     }
     this.shell = new AppShellController({
       server: this.server,
-      modelMode: 'fake',
+      modelMode: 'live',
       modelConnected: true,
       sandboxReady: false,
       network: 'disabled',
@@ -216,13 +327,76 @@ export class DesktopSession {
       liveModelAvailable: isLiveAvailable,
       permissionMode: this.permissionMode,
     });
+    if (typeof this.server.setEnablePowershellExecution === 'function') {
+      this.server.setEnablePowershellExecution(initialSettings.enablePowershellExecution);
+    }
+    if (typeof this.server.setMaxHistoryRounds === 'function') {
+      this.server.setMaxHistoryRounds(initialSettings.maxHistoryRounds);
+    }
+    if (initialSettings.mcpServers) {
+      const bridge = this.server.getMcpBridge();
+      for (const [id, cfg] of Object.entries(initialSettings.mcpServers)) {
+        bridge.addServer(id, cfg);
+      }
+    }
     this.restoreLatestSession();
+
+    if (typeof this.server.subscribeEvents === 'function') {
+      this.eventUnsubscribe = this.server.subscribeEvents((event) => {
+        this.handleRuntimeEvent(event);
+      });
+    }
+  }
+
+  private handleRuntimeEvent(event: AnyRuntimeEvent): void {
+    if (event.type === 'intent.classified') {
+      const payload = event.payload as { intent?: string };
+      this.executionState = {
+        status: 'routing',
+        detail: `已识别意图 [${payload.intent ?? 'task'}]，正在准备执行...`,
+      };
+      this.changedSnapshot();
+    } else if (event.type === 'tool.started') {
+      const payload = event.payload as { toolName?: string };
+      const toolName = payload.toolName ?? 'tool';
+      this.executionState = {
+        status: 'tool_executing',
+        currentTool: toolName,
+        detail: `正在调度并执行工具: ${toolName}...`,
+      };
+      this.changedSnapshot();
+    } else if (event.type === 'tool.completed') {
+      const payload = event.payload as { toolName?: string };
+      const toolName = payload.toolName ?? 'tool';
+      this.executionState = {
+        status: 'thinking',
+        currentTool: toolName,
+        detail: `工具 ${toolName} 已完成，Agent 正在分析结果...`,
+      };
+      this.changedSnapshot();
+    } else if (event.type === 'tool.failed') {
+      const payload = event.payload as { toolName?: string };
+      const toolName = payload.toolName ?? 'tool';
+      this.executionState = {
+        status: 'thinking',
+        currentTool: toolName,
+        detail: `工具 ${toolName} 执行遇到异常，正在自愈调整...`,
+      };
+      this.changedSnapshot();
+    } else if (event.type === 'message.updated' || event.type === 'message.created') {
+      this.changedSnapshot();
+    }
   }
 
   public selectWorkspace(workspaceRoot?: string): DesktopSnapshot {
-    const target = workspaceRoot ?? this.shell.view().workspaceRoot ?? 'e:\\Agent\\workspace';
+    const target = workspaceRoot ?? this.shell.view().workspaceRoot ?? join(tmpdir(), 'agent-workspace');
+    if (!existsSync(target)) {
+      mkdirSync(target, { recursive: true });
+    }
     this.home.selectWorkspace(target);
     this.shell.selectWorkspace(target);
+    this.server.scanWorkspaceSkills(target);
+    void this.server.getMcpBridge().loadFromConfig({ workspacePath: target });
     return this.changedSnapshot();
   }
 
@@ -235,15 +409,25 @@ export class DesktopSession {
 
   public async sendMessage(
     input: string,
-    options?: { skillId?: string },
+    options?: { skillId?: string; attachments?: readonly AttachmentItem[] },
   ): Promise<DesktopSnapshot> {
     const text = input.trim();
-    if (!text) {
+    const currentAttachments = options?.attachments ?? this.home.getAttachments();
+    if (!text && currentAttachments.length === 0) {
       return this.snapshot();
     }
 
+    if (text === '/compact' || text.startsWith('/compact ')) {
+      this.home.setTaskInput('');
+      return await this.compactContext();
+    }
+
     if (!this.activeThreadId) {
-      const workspaceRoot = this.shell.view().workspaceRoot ?? 'e:\\Agent\\workspace';
+      let workspaceRoot = this.shell.view().workspaceRoot;
+      if (!workspaceRoot) {
+        workspaceRoot = join(tmpdir(), 'agent-scratch', `sess-${Date.now()}`);
+        mkdirSync(workspaceRoot, { recursive: true });
+      }
       const thread = this.server.createThread({
         workspaceId: 'desktop-workspace',
         workspaceRoot,
@@ -252,13 +436,123 @@ export class DesktopSession {
       this.shell.bindThread(thread, undefined);
     }
 
+    if (this.activeThreadId && !this.sessionMeta.has(this.activeThreadId)) {
+      this.sessionMeta.set(this.activeThreadId, {
+        id: this.activeThreadId,
+        title: text.slice(0, 24) || '临时会话',
+        isPinned: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    } else if (this.activeThreadId) {
+      const currentMeta = this.sessionMeta.get(this.activeThreadId);
+      if (currentMeta && (currentMeta.title === '新临时会话' || currentMeta.title === '新项目会话')) {
+        this.sessionMeta.set(this.activeThreadId, {
+          ...currentMeta,
+          title: text.slice(0, 24) || currentMeta.title,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    }
+
     if (options?.skillId) {
       this.server.setThreadSkill(this.activeThreadId, options.skillId);
     }
 
-    await this.server.sendMessage(this.activeThreadId, text, options);
+    let messageText = text;
+    if (currentAttachments && currentAttachments.length > 0) {
+      const reader = new AttachmentReader();
+      const extracted = reader.extractAll(currentAttachments);
+      const attachmentsBlock = reader.formatPrompt(extracted);
+      messageText = attachmentsBlock ? `${attachmentsBlock}\n\n${text || '请查阅并处理上述附件。'}` : text;
+    }
+
+    this.isGenerating = true;
+    this.executionState = { status: 'thinking', detail: 'Agent 正在思考并规划...' };
+    this.changedSnapshot();
+
+    try {
+      await this.server.sendMessage(this.activeThreadId, messageText, options);
+    } finally {
+      this.isGenerating = false;
+      this.executionState = { status: 'idle' };
+      this.refreshActiveBinding();
+    }
     this.home.setTaskInput('');
+    this.home.clearAttachments();
     return this.changedSnapshot();
+  }
+
+  public addAttachment(item: AttachmentItem): DesktopSnapshot {
+    this.home.addAttachment(item);
+    return this.changedSnapshot();
+  }
+
+  public removeAttachment(id: string): DesktopSnapshot {
+    this.home.removeAttachment(id);
+    return this.changedSnapshot();
+  }
+
+  public clearAttachments(): DesktopSnapshot {
+    this.home.clearAttachments();
+    return this.changedSnapshot();
+  }
+
+  public setReasoningEffort(effort: ReasoningEffort): DesktopSnapshot {
+    this.home.setReasoningEffort(effort);
+    if (this.switchableModel) {
+      this.switchableModel.setReasoningEffort(effort);
+    }
+    return this.changedSnapshot();
+  }
+
+  public async compactContext(): Promise<DesktopSnapshot> {
+    if (!this.activeThreadId) {
+      return this.snapshot();
+    }
+    this.home.setIsCompacting(true);
+    this.changedSnapshot();
+
+    try {
+      if (typeof this.server.compactThreadMessages === 'function') {
+        this.server.compactThreadMessages(this.activeThreadId);
+      } else {
+        const messages = this.server.listMessages(this.activeThreadId);
+        if (messages.length > 1) {
+          const prompt = `/compact 请将此前对话与已执行任务梳理提炼为结构化摘要，保留关键决策、已生成文件资产与下一步规划。`;
+          await this.server.sendMessage(this.activeThreadId, prompt, {
+            skillId: 'general-assistant',
+          });
+        }
+      }
+    } finally {
+      this.home.setIsCompacting(false);
+    }
+    return this.changedSnapshot();
+  }
+
+  public computeTokenSnapshot(): TokenUsageSnapshot {
+    const messages = this.activeThreadId ? this.server.listMessages(this.activeThreadId) : [];
+    let charCount = 0;
+    for (const m of messages) {
+      charCount += (m.content?.length ?? 0) + (m.reasoningContent?.length ?? 0);
+    }
+    const usedTokens = Math.max(120, Math.ceil(charCount / 3.5));
+    const contextWindow = 128000;
+    const inputTokens = Math.round(usedTokens * 0.7);
+    const outputTokens = Math.round(usedTokens * 0.3);
+    const cacheRead = Math.round(usedTokens * 0.15);
+    const cacheWrite = Math.round(usedTokens * 0.05);
+
+    return {
+      usedTokens,
+      contextWindow,
+      inputTokens,
+      outputTokens,
+      cacheRead,
+      cacheWrite,
+      messagesCount: messages.length,
+    };
   }
 
   public setTaskInput(input: string): DesktopSnapshot {
@@ -279,6 +573,15 @@ export class DesktopSession {
   public setPermissionMode(mode: FilePermissionMode): DesktopSnapshot {
     this.permissionMode = mode;
     this.home.setPermissionMode(mode);
+    if (typeof this.server.setApprovalPolicy === 'function') {
+      const policy = this.server.getApprovalPolicy ? this.server.getApprovalPolicy() : new DefaultApprovalPolicy();
+      const tier: ApprovalTier =
+        mode === 'full-access' || mode === 'auto' || mode === 'accept-edits' || mode === 'risk-gated' || mode === 'ask-approval'
+          ? mode
+          : 'ask-approval';
+      policy.setTier(tier);
+      this.server.setApprovalPolicy(policy);
+    }
     return this.changedSnapshot();
   }
 
@@ -298,7 +601,11 @@ export class DesktopSession {
     this.shell.bindThread(submission.thread, submission.turn);
     this.shell.navigate('task-plan');
 
-    if (this.permissionMode === 'full-access' || this.permissionMode === 'sandbox-artifacts') {
+    if (
+      this.permissionMode === 'full-access' ||
+      this.permissionMode === 'auto' ||
+      this.permissionMode === 'accept-edits'
+    ) {
       const approval = this.currentApproval();
       if (approval && approval.status === 'pending') {
         this.server.respondApproval({ approvalId: approval.id, decision: 'approved' });
@@ -324,6 +631,275 @@ export class DesktopSession {
     return this.changedSnapshot();
   }
 
+  public async createSession(options?: {
+    projectId?: string | undefined;
+    title?: string | undefined;
+    folderPath?: string | undefined;
+  } | undefined): Promise<DesktopSnapshot> {
+    let workspaceRoot: string;
+    if (options?.projectId) {
+      const project = this.projects.find((p) => p.id === options.projectId);
+      workspaceRoot = project ? project.folderPath : join(tmpdir(), 'agent-scratch', `sess-${Date.now()}`);
+    } else if (options?.folderPath) {
+      workspaceRoot = options.folderPath;
+    } else {
+      workspaceRoot = join(tmpdir(), 'agent-scratch', `sess-${Date.now()}`);
+    }
+
+    if (!existsSync(workspaceRoot)) {
+      mkdirSync(workspaceRoot, { recursive: true });
+    }
+
+    const thread = this.server.createThread({
+      workspaceId: 'desktop-workspace',
+      workspaceRoot,
+    });
+
+    const meta: DesktopSessionMetadata = {
+      id: thread.id,
+      title: options?.title ?? (options?.projectId ? '新项目会话' : '新临时会话'),
+      projectId: options?.projectId,
+      isPinned: false,
+      createdAt: thread.createdAt,
+      updatedAt: thread.updatedAt,
+    };
+    this.sessionMeta.set(thread.id, meta);
+
+    this.activeThreadId = thread.id;
+    this.activeTurnId = undefined;
+    this.selectWorkspace(workspaceRoot);
+    this.home.setTaskInput('');
+    this.home.clearAttachments();
+    this.shell.bindThread(thread, undefined);
+    this.shell.navigate('demo-home');
+
+    return this.changedSnapshot();
+  }
+
+  public async switchSession(sessionId: string): Promise<DesktopSnapshot> {
+    const thread = this.server.listThreads().find((t) => t.id === sessionId);
+    if (!thread) {
+      return this.snapshot();
+    }
+    this.activeThreadId = thread.id;
+    const events = this.server.listEvents(thread.id);
+    const turn = latestTurn(events);
+    this.activeTurnId = turn?.id;
+    if (thread.workspaceRoot) {
+      this.selectWorkspace(thread.workspaceRoot);
+    }
+    this.shell.bindThread(thread, turn);
+    this.shell.navigate('demo-home');
+    return this.changedSnapshot();
+  }
+
+  public async togglePinSession(sessionId: string): Promise<DesktopSnapshot> {
+    const meta = this.sessionMeta.get(sessionId);
+    if (meta) {
+      this.sessionMeta.set(sessionId, { ...meta, isPinned: !meta.isPinned });
+    }
+    return this.changedSnapshot();
+  }
+
+  public async renameSession(sessionId: string, title: string): Promise<DesktopSnapshot> {
+    const meta = this.sessionMeta.get(sessionId);
+    const trimmed = title.trim();
+    if (meta && trimmed) {
+      this.sessionMeta.set(sessionId, { ...meta, title: trimmed });
+    }
+    return this.changedSnapshot();
+  }
+
+  public async deleteSession(sessionId: string): Promise<DesktopSnapshot> {
+    this.sessionMeta.delete(sessionId);
+    if (this.activeThreadId === sessionId) {
+      const remaining = Array.from(this.sessionMeta.keys());
+      if (remaining.length > 0) {
+        return this.switchSession(remaining[remaining.length - 1]!);
+      }
+      this.activeThreadId = undefined;
+      this.activeTurnId = undefined;
+      this.home.setTaskInput('');
+    }
+    return this.changedSnapshot();
+  }
+
+  public async createProject(name: string, folderPath: string): Promise<DesktopSnapshot> {
+    const resolvedPath = folderPath.trim();
+    if (!existsSync(resolvedPath)) {
+      mkdirSync(resolvedPath, { recursive: true });
+    }
+    const projName = name.trim() || basename(resolvedPath) || '新项目';
+    const project: DesktopProject = {
+      id: `proj-${Date.now()}`,
+      name: projName,
+      folderPath: resolvedPath,
+      createdAt: new Date().toISOString(),
+      isExpanded: true,
+    };
+    this.projects.push(project);
+    return await this.createSession({
+      projectId: project.id,
+      title: `${projName} - 主会话`,
+    });
+  }
+
+  public async deleteProject(projectId: string): Promise<DesktopSnapshot> {
+    this.projects = this.projects.filter((p) => p.id !== projectId);
+    for (const [id, meta] of this.sessionMeta.entries()) {
+      if (meta.projectId === projectId) {
+        this.sessionMeta.set(id, { ...meta, projectId: undefined });
+      }
+    }
+    return this.changedSnapshot();
+  }
+
+  public async toggleProjectExpanded(projectId: string): Promise<DesktopSnapshot> {
+    const proj = this.projects.find((p) => p.id === projectId);
+    if (proj) {
+      (proj as { isExpanded?: boolean }).isExpanded = !proj.isExpanded;
+    }
+    return this.changedSnapshot();
+  }
+
+  public async promptSelectFolder(): Promise<string | undefined> {
+    return undefined;
+  }
+
+  public getSettings(): AgentSettings {
+    return this.settingsStore.load();
+  }
+
+  public async saveSettings(patch: Partial<AgentSettings>): Promise<DesktopSnapshot> {
+    this.settingsStore.save(patch);
+    if (patch.permissionPolicy) {
+      this.setPermissionMode(patch.permissionPolicy);
+    }
+    if (typeof patch.enablePowershellExecution === 'boolean' && typeof this.server.setEnablePowershellExecution === 'function') {
+      this.server.setEnablePowershellExecution(patch.enablePowershellExecution);
+    }
+    if (typeof patch.maxHistoryRounds === 'number' && typeof this.server.setMaxHistoryRounds === 'function') {
+      this.server.setMaxHistoryRounds(patch.maxHistoryRounds);
+    }
+    if (this.switchableModel) {
+      const activeService = this.settingsStore.getActiveService();
+      this.switchableModel.updateConfig({
+        provider: 'openai-compatible',
+        apiKey: activeService.apiKey,
+        baseURL: activeService.baseURL,
+        modelName: activeService.modelName,
+        ...(activeService.reasoningEffort ? { reasoningEffort: activeService.reasoningEffort } : {}),
+      });
+    }
+    return this.changedSnapshot();
+  }
+
+  public async testModelConnection(
+    service: Partial<ModelServiceConfig>,
+  ): Promise<ConnectionTestResult> {
+    const result = await this.settingsStore.testConnection(
+      service as Pick<ModelServiceConfig, 'baseURL' | 'apiKey' | 'modelName'>,
+    );
+    if (service.id) {
+      this.settingsStore.updateServiceTestResult(service.id, {
+        status: result.success ? 'success' : 'error',
+        latencyMs: result.latencyMs,
+        ...(result.error ? { error: result.error } : {}),
+      });
+    }
+    this.changedSnapshot();
+    return result;
+  }
+
+  public async saveMcpServer(
+    id: string,
+    config: McpServerConfig,
+  ): Promise<DesktopSnapshot> {
+    const settings = this.settingsStore.load();
+    const currentMcp: Record<string, McpServerConfig> = { ...(settings.mcpServers ?? {}) };
+    currentMcp[id] = config;
+    this.settingsStore.save({ mcpServers: currentMcp });
+
+    const ws = this.shell.view().workspaceRoot;
+    const bridge = this.server.getMcpBridge();
+    const supervisor = bridge.addServer(id, config, ws);
+    if (!config.disabled) {
+      try {
+        await supervisor.connect(8000);
+      } catch (err) {
+        console.warn(`[DesktopSession] Failed to connect MCP server "${id}":`, err);
+      }
+    }
+
+    return this.changedSnapshot();
+  }
+
+  public async deleteMcpServer(id: string): Promise<DesktopSnapshot> {
+    const settings = this.settingsStore.load();
+    const currentMcp: Record<string, McpServerConfig> = { ...(settings.mcpServers ?? {}) };
+    delete currentMcp[id];
+    this.settingsStore.save({ mcpServers: currentMcp });
+
+    const bridge = this.server.getMcpBridge();
+    await bridge.removeServer(id);
+    return this.changedSnapshot();
+  }
+
+  public async testMcpConnection(
+    config: McpServerConfig,
+    serverId = 'test',
+  ): Promise<McpTestResult> {
+    const ws = this.shell.view().workspaceRoot;
+    const supervisor = new McpProcessSupervisor(serverId, config, ws);
+    const start = Date.now();
+    try {
+      const tools = await supervisor.connect(10000);
+      const latencyMs = Date.now() - start;
+      const toolNames = tools.map((t) => t.name);
+      await supervisor.disconnect();
+      return {
+        success: true,
+        latencyMs,
+        toolCount: tools.length,
+        tools: toolNames,
+      };
+    } catch (err) {
+      await supervisor.disconnect();
+      return {
+        success: false,
+        latencyMs: Date.now() - start,
+        toolCount: 0,
+        tools: [],
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  public async reloadMcpServers(): Promise<DesktopSnapshot> {
+    const ws = this.shell.view().workspaceRoot;
+    const bridge = this.server.getMcpBridge();
+    const settings = this.settingsStore.load();
+
+    if (settings.mcpServers) {
+      for (const [id, cfg] of Object.entries(settings.mcpServers)) {
+        bridge.addServer(id, cfg, ws);
+      }
+    }
+    if (ws) {
+      await bridge.loadFromConfig({ workspacePath: ws });
+    }
+    await bridge.connectAll();
+    return this.changedSnapshot();
+  }
+
+  public async openConfigDir(): Promise<void> {
+    // 桌面环境下由 main.ts 触发 shell.showItemInFolder
+  }
+
+  public getConfigFilePath(): string {
+    return this.settingsStore.getConfigFilePath();
+  }
+
   public listAllEvents(): readonly DesktopEventDto[] {
     return this.server.listAllEvents().map(toEventDto);
   }
@@ -336,18 +912,12 @@ export class DesktopSession {
     const approval = turn === undefined ? undefined : latestApproval(events, turn.id);
     const workspaceRoot = this.shell.view().workspaceRoot;
     let workspaceFiles: string[] | undefined;
-    let artifactFiles: string[] | undefined;
+    const artifactFiles: string[] | undefined = undefined;
     if (workspaceRoot && existsSync(workspaceRoot)) {
       try {
         workspaceFiles = readdirSync(workspaceRoot, { withFileTypes: true })
           .filter((e) => e.isFile() && !e.name.startsWith('.'))
           .map((e) => e.name);
-        const artifactsPath = join(workspaceRoot, 'artifacts');
-        if (existsSync(artifactsPath)) {
-          artifactFiles = readdirSync(artifactsPath, { withFileTypes: true })
-            .filter((e) => e.isFile() && !e.name.startsWith('.'))
-            .map((e) => e.name);
-        }
       } catch {
         // ignore read errors
       }
@@ -358,6 +928,8 @@ export class DesktopSession {
     const activeSkillId = this.activeThreadId
       ? this.server.getThreadSkill(this.activeThreadId)?.id ?? 'general-assistant'
       : 'general-assistant';
+
+    this.home.setTokenSnapshot(this.computeTokenSnapshot());
 
     return {
       shell: this.shell.view(),
@@ -374,6 +946,15 @@ export class DesktopSession {
       messages,
       skills,
       activeSkillId,
+      sessions: Array.from(this.sessionMeta.values()),
+      projects: this.projects,
+      activeSessionId: this.activeThreadId,
+      settings: this.settingsStore.load(),
+      activeServiceName: this.settingsStore.getActiveService().name,
+      activeModelName: this.settingsStore.getActiveService().modelName,
+      mcpServers: this.server.getMcpBridge().listServers(),
+      isGenerating: this.isGenerating,
+      executionState: this.executionState,
     };
   }
 
@@ -391,7 +972,19 @@ export class DesktopSession {
   }
 
   private restoreLatestSession(): void {
-    const thread = this.server.listThreads().at(-1);
+    const threads = this.server.listThreads();
+    for (const t of threads) {
+      if (!this.sessionMeta.has(t.id)) {
+        this.sessionMeta.set(t.id, {
+          id: t.id,
+          title: `会话 ${t.id.slice(-4)}`,
+          isPinned: false,
+          createdAt: t.createdAt,
+          updatedAt: t.updatedAt,
+        });
+      }
+    }
+    const thread = threads.at(-1);
     if (thread === undefined) {
       return;
     }
@@ -414,6 +1007,13 @@ export class DesktopSession {
       return;
     }
     const thread = this.server.getThread(this.activeThreadId);
+    if (!this.activeTurnId) {
+      const events = this.server.listEvents(this.activeThreadId);
+      const turnObj = latestTurn(events);
+      if (turnObj) {
+        this.activeTurnId = turnObj.id;
+      }
+    }
     const turn = this.activeTurnId === undefined ? undefined : this.server.getTurn(this.activeTurnId);
     this.shell.bindThread(thread, turn);
   }

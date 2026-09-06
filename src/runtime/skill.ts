@@ -1,3 +1,5 @@
+import { scanWorkspaceSkills } from './skill-loader.js';
+
 export interface AgentSkill {
   readonly id: string;
   readonly name: string;
@@ -5,6 +7,12 @@ export interface AgentSkill {
   readonly description: string;
   readonly systemPrompt: string;
   readonly recommendedTools: readonly string[];
+  // Skill 2.0 规范属性
+  readonly requiredTools?: readonly string[] | undefined;
+  readonly allowedMcpServers?: readonly string[] | undefined;
+  readonly temperature?: number | undefined;
+  readonly isBuiltin?: boolean | undefined;
+  readonly filePath?: string | undefined;
 }
 
 export const BUILTIN_SKILLS: readonly AgentSkill[] = [
@@ -16,6 +24,7 @@ export const BUILTIN_SKILLS: readonly AgentSkill[] = [
     systemPrompt:
       '你是一个由 DeepMind 和 Codex 架构标准驱动的高级 Agent Runtime 智能体。你具备深度对话、任务编排、工程研发与 Office 自动化能力。遇到打招呼或常规问题直接友好用中文回答；若涉及文件或数据处理，可主动调用工具并核验产物。',
     recommendedTools: ['workspace.read_file', 'workspace.list_files'],
+    isBuiltin: true,
   },
   {
     id: 'data-analysis',
@@ -25,6 +34,8 @@ export const BUILTIN_SKILLS: readonly AgentSkill[] = [
     systemPrompt:
       '你是一位资深商业数据分析专家。当用户需要分析销售额、订单或财务指标时，优先读取工作区对应表格文件（如 sales.csv），调用 office.process_excel 工具生成带求和公式的汇总报表 sales-summary.xlsx，并给出关键业务洞察与增长建议。',
     recommendedTools: ['workspace.read_file', 'office.process_excel'],
+    requiredTools: ['workspace.read_file', 'office.process_excel'],
+    isBuiltin: true,
   },
   {
     id: 'report-writing',
@@ -34,6 +45,8 @@ export const BUILTIN_SKILLS: readonly AgentSkill[] = [
     systemPrompt:
       '你是一位资深文档工程与业务报告专家。当用户需要编写项目周报或会议纪要时，整合工作区会议纪要（meeting-notes.md）、决策文档（decisions.txt）以及销售数据，调用 office.generate_word_report 生成高保真结构化 Word 报告 weekly-meeting-report.docx，并展示核心结论。',
     recommendedTools: ['workspace.read_file', 'office.generate_word_report'],
+    requiredTools: ['workspace.read_file', 'office.generate_word_report'],
+    isBuiltin: true,
   },
   {
     id: 'code-engineer',
@@ -43,6 +56,7 @@ export const BUILTIN_SKILLS: readonly AgentSkill[] = [
     systemPrompt:
       '你是一位资深全栈系统架构师与资深软件工程师。你熟练掌握 TypeScript、Node.js、Electron 与现代前端架构规范。解答时遵循 SOLID 原则、防御性编程与 Windows 环境兼容性。',
     recommendedTools: ['workspace.read_file', 'workspace.list_files'],
+    isBuiltin: true,
   },
 ];
 
@@ -65,5 +79,24 @@ export class SkillRegistry {
 
   public register(skill: AgentSkill): void {
     this.skills.set(skill.id, skill);
+  }
+
+  public unregister(id: string): boolean {
+    return this.skills.delete(id);
+  }
+
+  public resetToBuiltins(): void {
+    this.skills.clear();
+    for (const skill of BUILTIN_SKILLS) {
+      this.skills.set(skill.id, skill);
+    }
+  }
+
+  public scanWorkspace(workspacePath: string): readonly AgentSkill[] {
+    const discovered = scanWorkspaceSkills(workspacePath);
+    for (const skill of discovered) {
+      this.skills.set(skill.id, skill);
+    }
+    return discovered;
   }
 }

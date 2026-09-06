@@ -171,6 +171,76 @@ export class LocalWorkspaceSandbox {
     };
   }
 
+  public writeWorkspaceFile(targetPath: string, content: string): ArtifactWriteResult {
+    const decision = this.check({ operation: 'workspace_write', targetPath });
+    this.assertAllowed(decision);
+
+    const absolutePath = this.resolveInsideRoot(targetPath);
+    const parentPath = dirname(absolutePath);
+    mkdirSync(parentPath, { recursive: true });
+    this.assertRealPathInsideRoot(parentPath);
+
+    writeFileSync(absolutePath, content, 'utf8');
+    return {
+      path: absolutePath,
+      bytes: Buffer.byteLength(content, 'utf8'),
+    };
+  }
+
+  public editWorkspaceFile(
+    targetPath: string,
+    targetContent: string,
+    replacementContent: string,
+  ): { path: string; replacements: number } {
+    const decision = this.check({ operation: 'workspace_write', targetPath });
+    this.assertAllowed(decision);
+
+    const absolutePath = this.resolveInsideRoot(targetPath);
+    if (!existsSync(absolutePath) || !statSync(absolutePath).isFile()) {
+      throw new Error(`workspace file is not found for editing: ${targetPath}`);
+    }
+    this.assertRealPathInsideRoot(absolutePath);
+
+    const original = readFileSync(absolutePath, 'utf8');
+    if (!original.includes(targetContent)) {
+      throw new Error(`target content was not found in ${targetPath} to replace`);
+    }
+
+    const updated = original.replace(targetContent, replacementContent);
+    writeFileSync(absolutePath, updated, 'utf8');
+
+    return {
+      path: absolutePath,
+      replacements: 1,
+    };
+  }
+
+  public listDirectory(subPath = ''): readonly { name: string; isDirectory: boolean; size: number }[] {
+    const targetDir = subPath ? this.resolveInsideRoot(subPath) : this.rootDir;
+    if (!existsSync(targetDir) || !statSync(targetDir).isDirectory()) {
+      return [];
+    }
+    this.assertRealPathInsideRoot(targetDir);
+
+    const entries = readdirSync(targetDir, { withFileTypes: true });
+    return entries.map((e) => {
+      const fullPath = join(targetDir, e.name);
+      let size = 0;
+      if (e.isFile()) {
+        try {
+          size = statSync(fullPath).size;
+        } catch {
+          // ignore
+        }
+      }
+      return {
+        name: e.name,
+        isDirectory: e.isDirectory(),
+        size,
+      };
+    });
+  }
+
   private evaluate(input: SandboxCheckInput): SandboxDecision {
     if (input.operation === 'network' || input.operation === 'external_access') {
       return this.fromPolicy(input, this.policy.decide(input));
@@ -197,12 +267,12 @@ export class LocalWorkspaceSandbox {
     }
 
     if (input.operation === 'write_artifact') {
-      if (!isWithin(this.artifactsDir, absolutePath)) {
+      if (!isWithin(this.rootDir, absolutePath)) {
         return this.createDecision(
           input.operation,
           'denied',
           'path_outside_workspace',
-          'artifacts must be written below the task artifacts directory',
+          'artifacts must be written inside the workspace directory',
           input.targetPath,
         );
       }

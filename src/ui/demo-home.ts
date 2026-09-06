@@ -1,11 +1,19 @@
 import type { AppServerContract } from '../runtime/app-server.js';
-import type { Thread, Turn } from '../runtime/protocol.js';
+import type {
+  AttachmentItem,
+  ReasoningEffort,
+  Thread,
+  TokenUsageSnapshot,
+  Turn,
+} from '../runtime/protocol.js';
 
 export type DemoHomeState = 'default' | 'empty' | 'disabled' | 'loading';
-export type DemoModelMode = 'fake' | 'live';
+export type DemoModelMode = 'live';
 export type FilePermissionMode =
   | 'full-access'
-  | 'sandbox-artifacts'
+  | 'auto'
+  | 'accept-edits'
+  | 'risk-gated'
   | 'ask-approval'
   | 'read-only';
 
@@ -26,6 +34,10 @@ export interface DemoHomeView {
   readonly canSubmit: boolean;
   readonly submitLabel: string;
   readonly disabledReason?: string;
+  readonly attachments: readonly AttachmentItem[];
+  readonly reasoningEffort: ReasoningEffort;
+  readonly tokenSnapshot?: TokenUsageSnapshot;
+  readonly isCompacting: boolean;
 }
 
 export interface DemoSubmission {
@@ -39,7 +51,9 @@ export interface DemoHomeOptions {
   readonly workspaceId?: string;
   readonly liveModelAvailable?: boolean;
   readonly permissionMode?: FilePermissionMode;
+  readonly reasoningEffort?: ReasoningEffort;
 }
+
 
 export class DemoHomeController {
   private readonly server: AppServerContract;
@@ -47,19 +61,54 @@ export class DemoHomeController {
   private readonly liveModelAvailable: boolean;
   private taskInput = '';
   private workspaceRoot: string | undefined;
-  private modelMode: DemoModelMode = 'fake';
+  private modelMode: DemoModelMode = 'live';
   private permissionMode: FilePermissionMode;
+  private reasoningEffort: ReasoningEffort = 'max';
+  private attachments: AttachmentItem[] = [];
+  private tokenSnapshot?: TokenUsageSnapshot;
+  private isCompacting = false;
   private loading = false;
 
   public constructor(options: DemoHomeOptions) {
     this.server = options.server;
     this.workspaceId = options.workspaceId ?? 'desktop-workspace';
-    this.liveModelAvailable = options.liveModelAvailable ?? false;
+    this.liveModelAvailable = options.liveModelAvailable ?? true;
     this.permissionMode = options.permissionMode ?? 'full-access';
+    this.reasoningEffort = options.reasoningEffort ?? 'max';
   }
 
   public setTaskInput(input: string): void {
     this.taskInput = input;
+  }
+
+  public addAttachment(item: AttachmentItem): void {
+    if (!this.attachments.some((a) => a.id === item.id)) {
+      this.attachments.push(item);
+    }
+  }
+
+  public removeAttachment(id: string): void {
+    this.attachments = this.attachments.filter((a) => a.id !== id);
+  }
+
+  public clearAttachments(): void {
+    this.attachments = [];
+  }
+
+  public getAttachments(): readonly AttachmentItem[] {
+    return this.attachments;
+  }
+
+  public setReasoningEffort(effort: ReasoningEffort): void {
+    this.reasoningEffort = effort;
+  }
+
+  public setTokenSnapshot(snapshot: TokenUsageSnapshot): void {
+    this.tokenSnapshot = snapshot;
+  }
+
+  public setIsCompacting(isCompacting: boolean): void {
+    this.isCompacting = isCompacting;
   }
 
   public chooseQuickTask(task: string): void {
@@ -93,10 +142,14 @@ export class DemoHomeController {
       quickTasks: DEMO_QUICK_TASKS,
       canSubmit: state === 'default',
       submitLabel: state === 'loading' ? '正在生成方案…' : '生成方案',
+      attachments: [...this.attachments],
+      reasoningEffort: this.reasoningEffort,
+      isCompacting: this.isCompacting,
     };
     return {
       ...base,
       ...(this.workspaceRoot === undefined ? {} : { workspaceRoot: this.workspaceRoot }),
+      ...(this.tokenSnapshot === undefined ? {} : { tokenSnapshot: this.tokenSnapshot }),
       ...(disabledReason === undefined ? {} : { disabledReason }),
     };
   }
@@ -128,7 +181,7 @@ export class DemoHomeController {
     if (this.workspaceRoot === undefined) {
       return 'empty';
     }
-    if (this.taskInput.trim().length === 0) {
+    if (this.taskInput.trim().length === 0 && this.attachments.length === 0) {
       return 'disabled';
     }
     if (this.modelMode === 'live' && !this.liveModelAvailable) {
@@ -141,11 +194,11 @@ export class DemoHomeController {
     if (state === 'empty') {
       return '尚未选择工作区';
     }
-    if (state === 'disabled' && this.taskInput.trim().length === 0) {
+    if (state === 'disabled' && this.taskInput.trim().length === 0 && this.attachments.length === 0) {
       return '输入任务后才能生成方案';
     }
-    if (state === 'disabled' && this.modelMode === 'live' && !this.liveModelAvailable) {
-      return 'Live Model 尚未配置，当前可使用 Fake Model Demo';
+    if (state === 'disabled' && !this.liveModelAvailable) {
+      return '模型服务尚未配置，请检查 API Key 配置与网络连接';
     }
     return undefined;
   }

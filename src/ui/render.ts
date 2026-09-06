@@ -1,13 +1,21 @@
 import type {
   DesktopApprovalView,
   DesktopEventDto,
+  DesktopExecutionState,
   DesktopPlanView,
+  DesktopProject,
+  DesktopSessionMetadata,
   DesktopThreadView,
   DesktopTurnView,
 } from '../desktop/session.js';
 import type { AppShellView } from './app-shell.js';
-import type { DemoHomeView, FilePermissionMode } from './demo-home.js';
-import type { ChatMessage } from '../runtime/protocol.js';
+import type { DemoHomeView, DemoModelMode, FilePermissionMode } from './demo-home.js';
+import type {
+  AttachmentItem,
+  ChatMessage,
+  ReasoningEffort,
+  TokenUsageSnapshot,
+} from '../runtime/protocol.js';
 import type { AgentSkill } from '../runtime/skill.js';
 
 function escapeHtml(value: string): string {
@@ -20,83 +28,164 @@ function escapeHtml(value: string): string {
 }
 
 export interface AppShellRenderContext {
-  readonly workspaceFiles?: readonly string[];
-  readonly artifactFiles?: readonly string[];
+  readonly workspaceFiles?: readonly string[] | undefined;
+  readonly artifactFiles?: readonly string[] | undefined;
+  readonly sessions?: readonly DesktopSessionMetadata[] | undefined;
+  readonly projects?: readonly DesktopProject[] | undefined;
+  readonly activeSessionId?: string | undefined;
+}
+
+function renderSessionItem(
+  s: DesktopSessionMetadata,
+  activeSessionId?: string,
+): string {
+  const isActive = s.id === activeSessionId;
+  const pinIcon = s.isPinned ? '📍' : '📌';
+  const pinTitle = s.isPinned ? '取消置顶' : '置顶';
+  return `
+    <div class="session-item ${isActive ? 'active' : ''}" data-action="switch-session" data-session-id="${escapeHtml(s.id)}" title="${escapeHtml(s.title)}">
+      <span class="session-icon">💬</span>
+      <span class="session-title">${escapeHtml(s.title)}</span>
+      <div class="session-actions">
+        <button type="button" class="btn-action-icon" data-action="toggle-pin-session" data-session-id="${escapeHtml(s.id)}" title="${pinTitle}">${pinIcon}</button>
+        <button type="button" class="btn-action-icon" data-action="rename-session" data-session-id="${escapeHtml(s.id)}" title="重命名">✏️</button>
+        <button type="button" class="btn-action-icon" data-action="delete-session" data-session-id="${escapeHtml(s.id)}" title="删除">🗑️</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderProjectCard(
+  p: DesktopProject,
+  sessions: readonly DesktopSessionMetadata[],
+  activeSessionId?: string,
+): string {
+  const isExpanded = p.isExpanded !== false;
+  const projectSessions = sessions.filter((s) => s.projectId === p.id);
+  const caret = isExpanded ? '▾' : '▸';
+  const sessionsHtml = projectSessions.length > 0
+    ? projectSessions.map((s) => renderSessionItem(s, activeSessionId)).join('')
+    : '<div class="empty-hint">该项目暂无会话</div>';
+
+  return `
+    <div class="project-card ${isExpanded ? 'expanded' : 'collapsed'}" data-project-id="${escapeHtml(p.id)}">
+      <div class="project-header" data-action="toggle-project-expanded" data-project-id="${escapeHtml(p.id)}">
+        <span class="project-caret">${caret}</span>
+        <div class="project-header-info">
+          <span class="project-name" title="${escapeHtml(p.folderPath)}">📁 ${escapeHtml(p.name)}</span>
+          <span class="project-folder-badge" title="${escapeHtml(p.folderPath)}">${escapeHtml(p.folderPath)}</span>
+        </div>
+        <div class="project-actions">
+          <button type="button" class="btn-action-icon" data-action="create-project-chat" data-project-id="${escapeHtml(p.id)}" title="在此项目创建新会话">＋</button>
+          <button type="button" class="btn-action-icon" data-action="delete-project" data-project-id="${escapeHtml(p.id)}" title="移除项目 (不删除本地文件)">🗑️</button>
+        </div>
+      </div>
+      ${isExpanded ? `
+        <div class="project-body">
+          <button type="button" class="btn-new-project-session" data-action="create-project-chat" data-project-id="${escapeHtml(p.id)}" title="创建属于该项目的新会话">
+            <span class="btn-icon">＋</span> 在此项目创建新会话
+          </button>
+          <div class="project-sessions">
+            ${sessionsHtml}
+          </div>
+        </div>
+      ` : ''}
+    </div>
+  `;
 }
 
 export function renderAppShell(
   view: AppShellView,
   context?: AppShellRenderContext,
 ): string {
-  // Navigation: only cohesive session workbench
-  const functionalNav = [
-    { id: 'demo-home', label: '新建会话' },
-  ];
-  const nav = functionalNav
-    .map(
-      (item) =>
-        `<button type="button" class="nav-btn" data-route="${item.id}" aria-current="${
-          view.route === item.id ? 'page' : 'false'
-        }"><span class="nav-icon">💬</span><span>${escapeHtml(item.label)}</span></button>`,
-    )
-    .join('');
-  const workspace = view.workspaceRoot
-    ? `<span data-status="workspace" title="${escapeHtml(view.workspaceRoot)}">📁 ${escapeHtml(view.workspaceRoot)}</span>`
-    : '<span data-status="workspace">尚未选择工作区</span>';
-  const stop = view.canStopTask
-    ? '<button type="button" data-action="stop-task">停止任务</button>'
+  const sessions = context?.sessions ?? [];
+  const projects = context?.projects ?? [];
+  const activeSessionId = context?.activeSessionId ?? view.threadId;
+
+  const pinnedSessions = sessions.filter((s) => s.isPinned);
+  const ephemeralSessions = sessions.filter((s) => !s.projectId && !s.isPinned);
+
+  const pinnedGroup = pinnedSessions.length > 0
+    ? `
+      <div class="sidebar-section">
+        <div class="section-title">📌 置顶会话</div>
+        <div class="session-list">${pinnedSessions.map((s) => renderSessionItem(s, activeSessionId)).join('')}</div>
+      </div>
+    `
     : '';
 
-  const workspaceName = view.workspaceRoot
-    ? view.workspaceRoot.split(/[\\/]/).pop() ?? 'workspace'
-    : 'demo-workspace';
+  const ephemeralGroup = `
+    <div class="sidebar-section">
+      <div class="section-title">⚡ 临时会话</div>
+      <div class="session-list">
+        ${ephemeralSessions.length > 0
+          ? ephemeralSessions.map((s) => renderSessionItem(s, activeSessionId)).join('')
+          : '<div class="empty-hint">暂无临时会话，点击上方创建</div>'}
+      </div>
+    </div>
+  `;
 
-  const defaultWorkspaceFiles = [
-    'sales.csv',
-    'meeting-notes.md',
-    'decisions.txt',
-  ];
-  const workspaceFilesList = (context?.workspaceFiles && context.workspaceFiles.length > 0
-    ? context.workspaceFiles
-    : defaultWorkspaceFiles)
-    .map((file) => `<div class="tree-file" data-filename="${escapeHtml(file)}" title="点击插入提示词"><span>📄 ${escapeHtml(file)}</span></div>`)
-    .join('');
+  const projectsGroup = `
+    <div class="sidebar-section projects-section">
+      <div class="section-header">
+        <span class="section-title">📁 项目工程</span>
+        <button type="button" class="btn-create-project" data-action="prompt-create-project" title="关联本地文件夹创建项目">＋ 关联文件夹</button>
+      </div>
+      <div class="project-list">
+        ${projects.length > 0
+          ? projects.map((p) => renderProjectCard(p, sessions, activeSessionId)).join('')
+          : '<div class="empty-hint">暂无项目，点击“＋ 关联文件夹”绑定本地工程</div>'}
+      </div>
+    </div>
+  `;
 
-  const defaultArtifactFiles = [
-    'sales-summary.xlsx',
-    'weekly-meeting-report.docx',
-  ];
-  const artifactFilesList = (context?.artifactFiles && context.artifactFiles.length > 0
-    ? context.artifactFiles
-    : defaultArtifactFiles)
-    .map(
-      (file) =>
-        `<div class="tree-file verified" data-filename="${escapeHtml(file)}" title="点击插入提示词"><span>📊 ${escapeHtml(file)}</span><span class="badge-tag">已验</span></div>`,
-    )
-    .join('');
+  const hasCustomFiles = Boolean(
+    (context?.workspaceFiles && context.workspaceFiles.length > 0) ||
+    (context?.artifactFiles && context.artifactFiles.length > 0),
+  );
+
+  let workspaceSummaryHtml = '';
+  if (hasCustomFiles) {
+    const workspaceFilesList = (context?.workspaceFiles ?? [])
+      .map((file) => `<div class="tree-file" data-filename="${escapeHtml(file)}" title="点击插入提示词"><span>📄 ${escapeHtml(file)}</span></div>`)
+      .join('');
+    const artifactFilesList = (context?.artifactFiles ?? [])
+      .map((file) => `<div class="tree-file verified" data-filename="${escapeHtml(file)}" title="点击插入提示词"><span>📊 ${escapeHtml(file)}</span><span class="badge-tag">已验</span></div>`)
+      .join('');
+    workspaceSummaryHtml = `
+      <div class="workspace-tree-section">
+        <div class="tree-section-header">
+          <span>工作区文件概览 (Files)</span>
+        </div>
+        <div class="folder-children">${workspaceFilesList}${artifactFilesList}</div>
+      </div>
+    `;
+  }
 
   return `<main data-page="app-shell" data-state="${view.readiness}" class="surface-base">
-  <nav aria-label="主导航" class="surface-card">
+  <nav aria-label="主导航" class="surface-card codex-sidebar">
     <div class="sidebar-header">
       <div class="sidebar-brand">
         <span class="brand-avatar">A</span>
         <span class="brand-name">Agent_XXXXX</span>
         <span class="brand-version">v1.0</span>
       </div>
+      <button type="button" class="btn-create-session" data-action="create-ephemeral-chat" title="开辟全新临时会话">
+        <span class="btn-icon">＋</span>
+        <span class="btn-text">创建新会话</span>
+      </button>
     </div>
-    <div class="nav-links">${nav}</div>
-    <div class="workspace-tree-section">
-      <div class="tree-section-header">
-        <span>本地工作空间 (Local Workspace)</span>
-      </div>
-      <div class="workspace-group">
-        <div class="folder-title">📁 ${escapeHtml(workspaceName)} (输入源)</div>
-        <div class="folder-children">${workspaceFilesList}</div>
-      </div>
-      <div class="workspace-group artifacts-group">
-        <div class="folder-title artifacts-title">📁 artifacts (任务产物目录)</div>
-        <div class="folder-children">${artifactFilesList}</div>
-      </div>
+    <div class="sidebar-scrollable">
+      ${pinnedGroup}
+      ${ephemeralGroup}
+      ${projectsGroup}
+      ${workspaceSummaryHtml}
+    </div>
+    <div class="sidebar-footer">
+      <button type="button" class="sidebar-settings-btn" data-action="open-settings" title="系统设置 (AI 服务与全局策略)">
+        <span class="settings-btn-icon">⚙️</span>
+        <span class="settings-btn-text">设置</span>
+      </button>
     </div>
   </nav>
   <header aria-label="全局状态">
@@ -109,19 +198,7 @@ export function renderAppShell(
       </button>
       <span class="header-center-title">Agent_XXXXX</span>
     </div>
-    <div class="header-right">
-      ${workspace}
-      <span data-status="sandbox" class="status-pill green">● ${
-        view.sandboxReady ? '沙箱就绪' : '沙箱保护中'
-      }</span>
-      <span data-status="model" class="status-pill">${escapeHtml(view.modelMode)} ${
-        view.modelConnected ? '已连接' : '未连接'
-      }</span>
-      <span data-status="network" class="status-pill">网络${
-        view.network === 'disabled' ? '关闭' : '已开启'
-      }</span>
-      ${stop}
-    </div>
+    <div class="header-right"></div>
   </header>
   <section data-route-content aria-live="polite">${escapeHtml(view.route)}</section>
 </main>`;
@@ -136,6 +213,11 @@ export interface DemoHomeRenderContext {
   readonly skills?: readonly AgentSkill[] | undefined;
   readonly activeSkillId?: string | undefined;
   readonly permissionMode?: FilePermissionMode | undefined;
+  readonly activeServiceName?: string | undefined;
+  readonly activeModelName?: string | undefined;
+  readonly configuredServices?: readonly { readonly id: string; readonly name: string; readonly modelName: string }[] | undefined;
+  readonly isGenerating?: boolean | undefined;
+  readonly executionState?: DesktopExecutionState | undefined;
 }
 
 function formatMarkdown(text: string): string {
@@ -152,16 +234,148 @@ function formatMarkdown(text: string): string {
     .replace(/\n/g, '<br>');
 }
 
+export function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+  return String(n);
+}
+
+function renderAttachmentsList(attachments: readonly AttachmentItem[]): string {
+  if (!attachments || attachments.length === 0) return '';
+  return `<div class="composer-attachment-chips" aria-label="已选附件">
+    ${attachments
+      .map(
+        (att) => `
+        <span class="attachment-chip" data-attachment-id="${escapeHtml(att.id)}">
+          <span class="chip-file-icon">📎</span>
+          <span class="chip-file-name" title="${escapeHtml(att.name)}">${escapeHtml(att.name)}</span>
+          <button type="button" class="chip-remove-btn" data-action="remove-attachment" data-attachment-id="${escapeHtml(att.id)}" title="移除附件">×</button>
+        </span>
+      `,
+      )
+      .join('')}
+  </div>`;
+}
+
+function renderApprovalTierSelector(permissionMode: FilePermissionMode): string {
+  return `
+    <div class="approval-tier-picker">
+      <span class="tier-icon">🛡️</span>
+      <select id="permission-mode" data-action="set-permission-mode" aria-label="权限模式" class="tier-select-chip" title="切换智能体运行权限策略">
+        <option value="full-access" ${permissionMode === 'full-access' ? 'selected' : ''}>完全访问 (免审批)</option>
+        <option value="auto" ${permissionMode === 'auto' ? 'selected' : ''}>全自动 (防破坏停下)</option>
+        <option value="accept-edits" ${permissionMode === 'accept-edits' ? 'selected' : ''}>自动接受编辑 (仅工作区)</option>
+        <option value="risk-gated" ${permissionMode === 'risk-gated' ? 'selected' : ''}>仅高危 (低危放行)</option>
+        <option value="ask-approval" ${permissionMode === 'ask-approval' ? 'selected' : ''}>每步确认 (人工审核)</option>
+        <option value="read-only" ${permissionMode === 'read-only' ? 'selected' : ''}>仅只读访问</option>
+      </select>
+    </div>
+  `;
+}
+
+function renderModelAndEffortSelector(
+  modelMode: DemoModelMode,
+  effort: ReasoningEffort,
+  activeServiceName?: string,
+  activeModelName?: string,
+  services?: readonly { readonly id: string; readonly name: string; readonly modelName: string }[],
+): string {
+  const displayName = activeServiceName
+    ? `${activeServiceName}${activeModelName ? ` (${activeModelName})` : ''}`
+    : 'DeepSeek V4 Pro';
+
+  const serviceOptions =
+    services && services.length > 0
+      ? services
+          .map(
+            (s) =>
+              `<option value="${s.id}" ${s.name === activeServiceName ? 'selected' : ''}>${escapeHtml(s.name)} (${escapeHtml(s.modelName)})</option>`,
+          )
+          .join('')
+      : `<option value="live" selected>${escapeHtml(displayName)}</option>`;
+
+  return `
+    <div class="model-select-wrap">
+      <span class="model-sparkle">✦</span>
+      <select id="model-mode" data-action="set-model-mode" aria-label="模型选择" class="model-select-chip" title="当前已生效的 AI 模型服务">
+        ${serviceOptions}
+      </select>
+      <select id="reasoning-effort" data-action="set-reasoning-effort" aria-label="推理强度" class="effort-select-chip" title="设置模型思考与推理强度">
+        <option value="max" ${effort === 'max' ? 'selected' : ''}>极高</option>
+        <option value="high" ${effort === 'high' ? 'selected' : ''}>高</option>
+        <option value="medium" ${effort === 'medium' ? 'selected' : ''}>中</option>
+        <option value="low" ${effort === 'low' ? 'selected' : ''}>低</option>
+        <option value="off" ${effort === 'off' ? 'selected' : ''}>关闭</option>
+      </select>
+    </div>
+  `;
+}
+
+function renderContextCompactionWidget(
+  snapshot?: TokenUsageSnapshot,
+  isCompacting = false,
+): string {
+  const used = snapshot?.usedTokens ?? 120;
+  const maxTokens = snapshot?.contextWindow ?? 128000;
+  const pct = Math.min(100, Math.round((used / maxTokens) * 100));
+  const tone = pct > 80 ? 'imminent' : pct > 60 ? 'caution' : 'calm';
+
+  return `
+    <div class="context-widget-container">
+      <button type="button" class="context-usage-widget ${tone}" data-action="toggle-context-panel" title="点击查看记忆余量与上下文压缩明细">
+        <svg class="ring-svg" viewBox="0 0 36 36">
+          <path class="ring-bg" stroke-dasharray="100, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+          <path class="ring-fill" stroke-dasharray="${pct}, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+        </svg>
+        <span class="ring-text">${isCompacting ? '整理中…' : `约${pct}% · ${formatTokens(used)}/${formatTokens(maxTokens)}`}</span>
+      </button>
+
+      <div class="context-popover-panel" id="context-popover" style="display: none;">
+        <div class="popover-header">
+          <strong>上下文与记忆余量</strong>
+          <span class="popover-pct ${tone}">约 ${pct}%</span>
+        </div>
+        <div class="popover-sub">已用 ${formatTokens(used)} / 容量 ${formatTokens(maxTokens)} (共 ${snapshot?.messagesCount ?? 0} 条消息)</div>
+        <div class="popover-grid">
+          <div>输入: <span>${formatTokens(snapshot?.inputTokens ?? 0)}</span></div>
+          <div>输出: <span>${formatTokens(snapshot?.outputTokens ?? 0)}</span></div>
+          <div>缓存读取: <span>${formatTokens(snapshot?.cacheRead ?? 0)}</span></div>
+          <div>缓存写入: <span>${formatTokens(snapshot?.cacheWrite ?? 0)}</span></div>
+        </div>
+        <button type="button" class="btn-compact-trigger" data-action="compact-context" ${isCompacting ? 'disabled' : ''}>
+          ${isCompacting ? '正在整理上下文…' : '立即整理 (上下文压缩)'}
+        </button>
+      </div>
+    </div>
+  `;
+}
+
 function renderMessageList(messages: readonly ChatMessage[]): string {
   return messages
     .filter((m) => m.role !== 'system')
     .map((msg) => {
       const timeStr = msg.createdAt ? msg.createdAt.slice(11, 19) : '';
       if (msg.role === 'user') {
+        let text = msg.content;
+        let attachmentsHtml = '';
+        const match = text.match(/<attachments>([\s\S]*?)<\/attachments>\n?/);
+        if (match && match[1]) {
+          try {
+            const list = JSON.parse(match[1]);
+            attachmentsHtml = `<div class="msg-attachments-box">${list.map((a: any) => `
+              <span class="msg-attachment-pill">📎 ${escapeHtml(a.name)}</span>
+            `).join('')}</div>`;
+          } catch {
+            // ignore
+          }
+          text = text.replace(/<attachments>[\s\S]*?<\/attachments>\n?/, '');
+        }
+
         return `
           <div class="chat-message user" data-msg-id="${escapeHtml(msg.id)}">
             <div class="chat-bubble user-bubble">
-              <div class="chat-text">${escapeHtml(msg.content)}</div>
+              ${attachmentsHtml}
+              <div class="chat-text">${escapeHtml(text)}</div>
               <div class="chat-timestamp">${escapeHtml(timeStr)}</div>
             </div>
             <div class="chat-avatar user-avatar">👤</div>
@@ -230,6 +444,60 @@ function renderMessageList(messages: readonly ChatMessage[]): string {
     .join('');
 }
 
+export function renderComposerCard(
+  view: DemoHomeView,
+  isDocked = false,
+  skillBadgeLabel = '',
+  workspacePill = '',
+  context?: DemoHomeRenderContext,
+): string {
+  const attachmentsHtml = renderAttachmentsList(view.attachments);
+  const placeholder = isDocked
+    ? '继续输入指令，支持 /compact 整理上下文，或直接粘贴/拖入附件…'
+    : '输入任务需求或指令，支持 /compact 整理上下文，或直接粘贴/拖入附件...';
+
+  return `
+    <div class="main-prompt-card ${isDocked ? 'docked' : ''}" id="composer-card">
+      <div class="prompt-card-top-row">
+        <div class="prompt-active-badge">
+          <span class="skill-badge-pill">
+            <span>${escapeHtml(skillBadgeLabel)}</span>
+            <button type="button" class="badge-remove-btn" title="清除标签">×</button>
+          </span>
+        </div>
+      </div>
+
+      ${attachmentsHtml}
+
+      <label for="task-input" class="sr-only">任务输入</label>
+      <textarea id="task-input" name="task" aria-label="任务输入" placeholder="${placeholder}">${escapeHtml(view.taskInput)}</textarea>
+
+      <div class="prompt-card-bottom">
+        <div class="controls-left">
+          <input type="file" id="composer-file-picker" style="display: none;" multiple />
+          <button type="button" class="btn-card-plus" data-action="open-file-picker" title="添加文件或附件">+</button>
+          ${renderApprovalTierSelector(view.permissionMode)}
+          ${workspacePill}
+        </div>
+
+        <div class="controls-right">
+          ${renderModelAndEffortSelector(
+            view.modelMode,
+            view.reasoningEffort,
+            context?.activeServiceName,
+            context?.activeModelName,
+            context?.configuredServices,
+          )}
+          ${renderContextCompactionWidget(view.tokenSnapshot, view.isCompacting)}
+          <button type="button" class="submit-circle-btn" data-action="submit-plan" ${view.canSubmit ? '' : 'disabled'} title="${escapeHtml(view.submitLabel)}">
+            ↑
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 export function renderDemoHome(
   view: DemoHomeView,
   context?: DemoHomeRenderContext,
@@ -242,33 +510,9 @@ export function renderDemoHome(
     .join('');
 
   const workspaceName = view.workspaceRoot
-    ? view.workspaceRoot.split(/[\\/]/).pop() ?? 'workspace'
-    : '';
-
-  const workspacePill = view.workspaceRoot
-    ? `<button type="button" class="workspace-chip selected" data-action="select-workspace" title="${escapeHtml(view.workspaceRoot)}">
-        <span class="chip-icon">📁</span>
-        <span class="chip-text" data-status="workspace">${escapeHtml(workspaceName)}</span>
-        <span class="chip-arrow">▾</span>
-      </button>`
-    : `<button type="button" class="workspace-chip unselected" data-action="select-workspace" title="尚未选择工作区">
-        <span class="chip-icon">+</span>
-        <span class="chip-text" data-status="workspace">尚未选择工作区</span>
-        <span class="chip-arrow">▾</span>
-      </button>`;
-
-  const permissionSelect = `
-    <div class="permission-chip-wrap">
-      <span class="permission-shield-icon">🛡️</span>
-      <label for="permission-mode-select" class="sr-only">文件权限模式</label>
-      <select id="permission-mode-select" class="permission-select" data-action="set-permission-mode" aria-label="文件权限模式">
-        <option value="full-access" ${view.permissionMode === 'full-access' ? 'selected' : ''}>完全访问权限</option>
-        <option value="sandbox-artifacts" ${view.permissionMode === 'sandbox-artifacts' ? 'selected' : ''}>沙箱写保护: 仅限 artifacts/ 目录</option>
-        <option value="ask-approval" ${view.permissionMode === 'ask-approval' ? 'selected' : ''}>按需审批写入</option>
-        <option value="read-only" ${view.permissionMode === 'read-only' ? 'selected' : ''}>仅只读访问</option>
-      </select>
-      <span class="chip-arrow">▾</span>
-    </div>`;
+    ? view.workspaceRoot.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || view.workspaceRoot
+    : '尚未选择工作区';
+  const workspacePill = `<span class="workspace-pill" title="当前绑定工作区: ${escapeHtml(view.workspaceRoot ?? '尚未选择工作区')}">📁 ${escapeHtml(workspaceName)}</span>`;
 
   const activeSkill =
     context?.skills?.find((s) => s.id === context?.activeSkillId) ??
@@ -283,6 +527,10 @@ export function renderDemoHome(
 
   const skillBadgeLabel = `${activeSkill.icon} ${activeSkill.name}`;
   const hasMessages = Boolean(context?.messages && context.messages.length > 0);
+
+  const activeBadgeText = context?.activeServiceName
+    ? `⚡ ${context.activeServiceName}${context.activeModelName ? ` (${context.activeModelName})` : ''}`
+    : '⚡ DeepSeek V4 Pro';
 
   let inlineExecutionSection = '';
   if (context?.approval && context.approval.status === 'pending') {
@@ -321,15 +569,41 @@ export function renderDemoHome(
       </div>
     `).join('');
     inlineExecutionSection = `
-      <div class="inline-card execution-card ${context.turn.status}">
+      <div class="inline-card execution-card" data-execution-status="${escapeHtml(context.turn.status)}">
         <div class="inline-card-header">
           <span class="status-indicator green">●</span>
-          <strong>${context.turn.status === 'completed' ? '任务已执行完成' : '任务正在执行中…'}</strong>
-          <span class="execution-mode-badge">${view.permissionMode === 'full-access' ? '完全访问权限 (已自动授权)' : '已授权'}</span>
+          <strong>任务规划已生成并执行中</strong>
         </div>
         <div class="inline-steps-container">${steps}</div>
-      </div>`;
+       </div>`;
   }
+
+  const showLiveActivity = Boolean(
+    context?.isGenerating ||
+    (context?.executionState && context.executionState.status !== 'idle'),
+  );
+  const activityStatus = context?.executionState?.status ?? 'thinking';
+  const activityIcon =
+    activityStatus === 'tool_executing'
+      ? '⚡'
+      : activityStatus === 'routing'
+        ? '🎯'
+        : '🧠';
+  const activityDetail =
+    context?.executionState?.detail ||
+    (activityStatus === 'tool_executing'
+      ? `正在执行工具: ${context?.executionState?.currentTool ?? ''}...`
+      : 'Agent 正在深度思考与分析需求...');
+
+  const liveActivityHtml = showLiveActivity
+    ? `
+      <div class="chat-live-activity" data-execution-status="${escapeHtml(activityStatus)}">
+        <span class="live-activity-spinner"></span>
+        <span class="live-activity-icon">${activityIcon}</span>
+        <span class="live-activity-text">${escapeHtml(activityDetail)}</span>
+      </div>
+    `
+    : '';
 
   // If conversation has messages, render chat stream view with bottom docked card
   if (hasMessages) {
@@ -339,54 +613,18 @@ export function renderDemoHome(
       <div class="chat-header-left">
         <span class="chat-header-icon">${activeSkill.icon}</span>
         <span class="chat-header-title">${escapeHtml(activeSkill.name)}</span>
-        <span class="chat-header-badge">${view.modelMode === 'live' ? '⚡ DeepSeek V4 Flash' : '🧪 Fake Demo'}</span>
+        <span class="chat-header-badge" title="当前已生效的 AI 模型服务">${escapeHtml(activeBadgeText)}</span>
       </div>
-      <div class="chat-header-right">
-        <button type="button" class="btn-new-conversation" data-action="new-chat" title="重置并开启新对话">＋ 新会话</button>
-      </div>
+      <div class="chat-header-right"></div>
     </div>
 
     <div class="chat-messages-stream" id="chat-stream">
       ${renderMessageList(context?.messages ?? [])}
+      ${liveActivityHtml}
     </div>
 
     <div class="docked-prompt-area">
-      <div class="main-prompt-card docked">
-        <div class="prompt-active-badge">
-          <span class="skill-badge-pill">
-            <span>${escapeHtml(skillBadgeLabel)}</span>
-            <button type="button" class="badge-remove-btn" title="清除标签">×</button>
-          </span>
-        </div>
-
-        <label for="task-input" class="sr-only">任务输入</label>
-        <textarea id="task-input" name="task" aria-label="任务输入" placeholder="继续输入指令，例如：读取 sales.csv 并生成带 SUM 公式的 Excel 汇总...">${escapeHtml(view.taskInput)}</textarea>
-
-        <div class="prompt-card-bottom">
-          <div class="controls-left">
-            <button type="button" class="btn-card-plus" data-action="select-workspace" title="添加工作区或附件文件">+</button>
-          </div>
-
-          <div class="controls-right">
-            <div class="model-select-wrap">
-              <span class="model-add-icon">+</span>
-              <label for="model-mode" class="sr-only">模型选择</label>
-              <select id="model-mode" data-action="set-model-mode" aria-label="模型选择" class="model-select-chip">
-                <option value="live" ${view.modelMode === 'live' ? 'selected' : ''}>⚡ DeepSeek V4 Flash (极速智能)</option>
-                <option value="fake" ${view.modelMode === 'fake' ? 'selected' : ''}>🧪 Fake Model Demo (离线极速)</option>
-              </select>
-            </div>
-            <button type="button" class="submit-circle-btn" data-action="submit-plan" ${view.canSubmit ? '' : 'disabled'} title="${escapeHtml(view.submitLabel)}">
-              ↑
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div class="prompt-bottom-bar">
-        ${workspacePill}
-        ${permissionSelect}
-      </div>
+      ${renderComposerCard(view, true, skillBadgeLabel, workspacePill, context)}
     </div>
   </section>
 </main>`;
@@ -410,43 +648,9 @@ export function renderDemoHome(
 
     <div class="quick-tasks" aria-label="快捷任务">${quickTasks}</div>
 
-    <div class="main-prompt-card">
-      <div class="prompt-active-badge">
-        <span class="skill-badge-pill">
-          <span>${escapeHtml(skillBadgeLabel)}</span>
-          <button type="button" class="badge-remove-btn" title="清除标签">×</button>
-        </span>
-      </div>
+    ${renderComposerCard(view, false, skillBadgeLabel, workspacePill, context)}
 
-      <label for="task-input" class="sr-only">任务</label>
-      <textarea id="task-input" name="task" aria-label="任务输入" placeholder="输入任务需求，例如：读取工作区 sales.csv 与 meeting-notes.md，生成销售报表并汇总合计...">${escapeHtml(view.taskInput)}</textarea>
-
-      <div class="prompt-card-bottom">
-        <div class="controls-left">
-          <button type="button" class="btn-card-plus" data-action="select-workspace" title="添加工作区或附件文件">+</button>
-        </div>
-
-        <div class="controls-right">
-          <div class="model-select-wrap">
-            <span class="model-add-icon">+</span>
-            <label for="model-mode" class="sr-only">模型选择</label>
-            <select id="model-mode" data-action="set-model-mode" aria-label="模型选择" class="model-select-chip">
-              <option value="live" ${view.modelMode === 'live' ? 'selected' : ''}>⚡ DeepSeek V4 Flash (极速智能)</option>
-              <option value="fake" ${view.modelMode === 'fake' ? 'selected' : ''}>🧪 Fake Model Demo (离线极速)</option>
-            </select>
-          </div>
-          <button type="button" class="submit-circle-btn" data-action="submit-plan" ${view.canSubmit ? '' : 'disabled'} title="${escapeHtml(view.submitLabel)}">
-            ↑
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <div class="prompt-bottom-bar">
-      ${workspacePill}
-      ${permissionSelect}
-    </div>
-
+    ${liveActivityHtml}
     ${inlineExecutionSection}
 
     <div class="features-summary-grid">

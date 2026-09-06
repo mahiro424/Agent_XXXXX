@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { RuntimeEngine } from '../src/runtime/engine.js';
+import { EvidenceVerifier } from '../src/runtime/verifier.js';
+import type { VerificationRequest, VerificationResult } from '../src/runtime/verifier.js';
 import type { AnyRuntimeEvent } from '../src/runtime/protocol.js';
 
 function approvalIdFor(events: readonly AnyRuntimeEvent[]): string {
@@ -12,9 +14,7 @@ function approvalIdFor(events: readonly AnyRuntimeEvent[]): string {
 
 describe('Runtime Seam', () => {
   it('runs thread → turn → plan → approval → tool → verification', () => {
-    const runtime = new RuntimeEngine({
-      scenario: { tool: 'success', verification: 'verified' },
-    });
+    const runtime = new RuntimeEngine();
     const thread = runtime.createThread({ workspaceId: 'demo-workspace' });
     const turn = runtime.startTurn({
       threadId: thread.id,
@@ -44,9 +44,11 @@ describe('Runtime Seam', () => {
       'approval.resolved',
       'turn.status_changed',
       'tool.started',
+      'sandbox.decision',
       'tool.completed',
       'turn.status_changed',
       'artifact.verification_started',
+      'sandbox.decision',
       'artifact.verified',
       'turn.status_changed',
     ]);
@@ -82,7 +84,14 @@ describe('Runtime Seam', () => {
   });
 
   it('exposes tool failure without retrying automatically', () => {
-    const runtime = new RuntimeEngine({ scenario: { tool: 'failed' } });
+    class FailingVerifier extends EvidenceVerifier {
+      public override verify(request: VerificationRequest): VerificationResult {
+        return super.verify({ ...request, requiredText: ['MustContainNeverPresentText'] });
+      }
+    }
+    const runtime = new RuntimeEngine({
+      evidenceVerifier: new FailingVerifier(),
+    });
     const thread = runtime.createThread({ workspaceId: 'demo-workspace' });
     const turn = runtime.startTurn({ threadId: thread.id, input: '生成报告' });
 
@@ -97,8 +106,13 @@ describe('Runtime Seam', () => {
   });
 
   it('locks the turn in RECONCILIATION_REQUIRED when tool outcome is uncertain', () => {
+    class ReconciliationEvidenceVerifier extends EvidenceVerifier {
+      public override verify(request: VerificationRequest): VerificationResult {
+        return super.verify({ ...request, reconciliationRequired: true });
+      }
+    }
     const runtime = new RuntimeEngine({
-      scenario: { tool: 'reconciliation_required' },
+      evidenceVerifier: new ReconciliationEvidenceVerifier(),
     });
     const thread = runtime.createThread({ workspaceId: 'demo-workspace' });
     const turn = runtime.startTurn({ threadId: thread.id, input: '写入报告' });
@@ -117,8 +131,13 @@ describe('Runtime Seam', () => {
   });
 
   it('marks verification failure as a failed turn', () => {
+    class FailingEvidenceVerifier extends EvidenceVerifier {
+      public override verify(request: VerificationRequest): VerificationResult {
+        return super.verify({ ...request, requiredText: ['NonExistentRequiredKey'] });
+      }
+    }
     const runtime = new RuntimeEngine({
-      scenario: { tool: 'success', verification: 'failed' },
+      evidenceVerifier: new FailingEvidenceVerifier(),
     });
     const thread = runtime.createThread({ workspaceId: 'demo-workspace' });
     const turn = runtime.startTurn({ threadId: thread.id, input: '生成报告' });
